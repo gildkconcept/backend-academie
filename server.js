@@ -1,48 +1,104 @@
-// Charger dotenv en premier
 require('dotenv').config();
 
-const express = require('express');
-const cors = require('cors');
-const cookieParser = require('cookie-parser');
+const {app} = require('./app');
+const { createClient } = require('@supabase/supabase-js');
 
-console.log('📋 Vérification .env:');
-console.log('   SUPABASE_URL:', process.env.SUPABASE_URL ? '✅' : '❌');
-console.log('   SUPABASE_ANON_KEY:', process.env.SUPABASE_ANON_KEY ? '✅' : '❌');
-console.log('   JWT_SECRET:', process.env.JWT_SECRET ? '✅' : '❌');
-
-// Routes
-const authRoutes = require('./src/routes/authRoutes');
-const studentRoutes = require('./src/routes/studentRoutes');
-const serviceRoutes = require('./src/routes/serviceRoutes');
-const sessionRoutes = require('./src/routes/sessionRoutes');
-const quizRoutes = require('./src/routes/quizRoutes');
-const rankingRoutes = require('./src/routes/rankingRoutes');
-const verseRoutes = require('./src/routes/verseRoutes');
-
-const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  credentials: true,
-}));
-app.use(express.json());
-app.use(cookieParser());
+// Logs structurés
+const log = {
+  info:  (msg, meta = {}) => console.log(JSON.stringify({ level: 'INFO',  time: new Date().toISOString(), msg, ...meta })),
+  warn:  (msg, meta = {}) => console.warn(JSON.stringify({ level: 'WARN',  time: new Date().toISOString(), msg, ...meta })),
+  error: (msg, meta = {}) => console.error(JSON.stringify({ level: 'ERROR', time: new Date().toISOString(), msg, ...meta })),
+};
 
-// Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/students', studentRoutes);
-app.use('/api/services', serviceRoutes);
-app.use('/api/sessions', sessionRoutes);
-app.use('/api/quizzes', quizRoutes);
-app.use('/api/rankings', rankingRoutes);
-app.use('/api/verses', verseRoutes);
+// Vérification .env 
+const requiredEnvVars = ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'JWT_SECRET'];
 
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+log.info('📋 Vérification .env');
+const missingVars = requiredEnvVars.filter(key => !process.env[key]);
+
+requiredEnvVars.forEach(key => {
+  log.info(`   ${key}: ${process.env[key] ? '✅' : '❌'}`);
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Serveur démarré sur http://localhost:${PORT}`);
-  console.log(`📋 API Health: http://localhost:${PORT}/api/health`);
+if (missingVars.length > 0) {
+  log.error('Variables d\'environnement manquantes', { missing: missingVars });
+  process.exit(1);
+}
+
+// Connexion base de données
+async function connectDatabase() {
+  const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_ANON_KEY
+  );
+
+  const { error } = await supabase.from('students').select('count').limit(1);
+
+  if (error) {
+    throw new Error(`Connexion Supabase échouée : ${error.message}`);
+  }
+
+  log.info('✅ Connexion Supabase établie');
+  return supabase;
+}
+
+// Démarrage serveur 
+async function startServer() {
+  await connectDatabase();
+
+  const server = app.listen(PORT, () => {
+    log.info('🚀 Serveur démarré', {
+      url: `http://localhost:${PORT}`,
+      health: `http://localhost:${PORT}/api/health`,
+      env: process.env.NODE_ENV || 'development',
+    });
+  });
+
+  // Graceful shutdown 
+  function shutdown(signal) {
+    log.warn(`${signal} reçu — arrêt en cours...`);
+
+    server.close((err) => {
+      if (err) {
+        log.error('Erreur lors de la fermeture du serveur', { error: err.message });
+        process.exit(1);
+      }
+      log.info('✅ Serveur arrêté proprement');
+      process.exit(0);
+    });
+
+    // Forcer l'arrêt après 10s si le serveur ne se ferme pas
+    setTimeout(() => {
+      log.error('⏱️ Timeout dépassé — arrêt forcé');
+      process.exit(1);
+    }, 10_000).unref();
+  }
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT',  () => shutdown('SIGINT'));
+}
+
+//  Erreurs non catchées
+process.on('uncaughtException', (err) => {
+  log.error('💥 uncaughtException — arrêt immédiat', {
+    error: err.message,
+    stack: err.stack,
+  });
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  log.error('💥 unhandledRejection', {
+    reason: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+  });
+  process.exit(1);
+});
+
+// Lancement 
+startServer().catch((err) => {
+  log.error('❌ Échec du démarrage', { error: err.message });
+  process.exit(1);
 });
