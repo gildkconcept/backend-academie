@@ -2,9 +2,9 @@ const Quiz = require('../models/Quiz');
 const QuizResult = require('../models/QuizResult');
 
 class QuizService {
-  static async getQuizzesForStudent(studentLevel) {
+  static async getQuizzesForStudent(studentLevel, studentId) {  // ← AJOUTER studentId
     const quizzes = await Quiz.findAll(studentLevel);
-    const results = await QuizResult.getStudentResults(studentId);
+    const results = await QuizResult.getStudentResults(studentId);  // ← Maintenant studentId est défini
     const resultsMap = new Map(results?.map(r => [r.quiz_id, r]));
     
     const today = new Date().toISOString().split('T')[0];

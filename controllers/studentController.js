@@ -76,10 +76,51 @@ const deleteStudent = async (req, res) => {
   }
 };
 
+// ⚠️ NOUVEAU : Changer le niveau d'un étudiant
+const updateStudentLevel = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { level, reason } = req.body;
+    
+    const result = await StudentService.updateStudentLevel(id, level, reason, req.user);
+    
+    res.json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    console.error('Erreur updateStudentLevel:', error);
+    res.status(500).json({ error: error.message || 'Erreur serveur' });
+  }
+};
+
+// ⚠️ NOUVEAU : Promotion en masse
+const bulkPromote = async (req, res) => {
+  try {
+    const { studentIds, targetLevel, reason } = req.body;
+    
+    if (!studentIds || studentIds.length === 0) {
+      return res.status(400).json({ error: 'Aucun étudiant sélectionné' });
+    }
+    
+    const result = await StudentService.bulkPromote(studentIds, targetLevel, reason, req.user);
+    
+    res.json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    console.error('Erreur bulkPromote:', error);
+    res.status(500).json({ error: error.message || 'Erreur serveur' });
+  }
+};
+
 module.exports = {
   getAllStudents,
   getStudentById,
   addStudent,
   updateStudent,
   deleteStudent,
+  updateStudentLevel,  // ← AJOUTÉ
+  bulkPromote,         // ← AJOUTÉ
 };

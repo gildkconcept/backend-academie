@@ -14,6 +14,15 @@ const sessionRoutes = require('./routes/sessionRoutes');
 const quizRoutes = require('./routes/quizRoutes');
 const rankingRoutes = require('./routes/rankingRoutes');
 const verseRoutes = require('./routes/verseRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
+const liveRoutes = require('./routes/liveRoutes');
+const statsRoutes = require('./routes/statsRoutes');
+const sessionTypesRoutes = require('./routes/sessionTypesRoutes');
+const serviceAttendanceRoutes = require('./routes/serviceAttendanceRoutes');
+const serviceSessionsRoutes = require('./routes/serviceSessionsRoutes');
+const adminRoutes = require('./routes/adminRoutes');
+const reportsRoutes = require('./routes/reportsRoutes');
+
 
 const app = express();
 
@@ -65,6 +74,15 @@ app.use('/api/sessions', sessionRoutes);
 app.use('/api/quizzes',  quizRoutes);
 app.use('/api/rankings', rankingRoutes);
 app.use('/api/verses',   verseRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/live', liveRoutes);
+app.use('/api/stats', statsRoutes);
+app.use('/api/session-types', sessionTypesRoutes);
+app.use('/api/service/attendance', serviceAttendanceRoutes);
+app.use('/api/service-sessions', serviceSessionsRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/reports', reportsRoutes);
+
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
