@@ -1,3 +1,4 @@
+// services/studentService.js
 const Student = require('../models/Student');
 const bcrypt = require('bcryptjs');
 
@@ -78,7 +79,7 @@ class StudentService {
     return updated;
   }
 
-  // Supprimer un étudiant
+  // Supprimer un étudiant (soft delete)
   static async deleteStudent(id, user) {
     const student = await Student.findById(id);
     
@@ -89,6 +90,40 @@ class StudentService {
     
     await Student.softDelete(id);
     return true;
+  }
+
+  // ✅ AJOUTÉ - Changer le niveau d'un étudiant
+  static async updateStudentLevel(id, level, reason, user) {
+    const student = await Student.findById(id);
+    
+    // Vérifier les droits
+    if (user.role === 'service_manager' && student.service_id !== user.serviceId) {
+      throw new Error('Accès refusé');
+    }
+    
+    const oldLevel = student.level;
+    const updated = await Student.update(id, { level: parseInt(level) });
+    
+    return { success: true, oldLevel, newLevel: parseInt(level) };
+  }
+
+  // ✅ AJOUTÉ - Promotion en masse
+  static async bulkPromote(studentIds, targetLevel, reason, user) {
+    const results = {
+      success: [],
+      failed: []
+    };
+    
+    for (const studentId of studentIds) {
+      try {
+        await this.updateStudentLevel(studentId, targetLevel, reason, user);
+        results.success.push(studentId);
+      } catch (error) {
+        results.failed.push({ id: studentId, error: error.message });
+      }
+    }
+    
+    return results;
   }
 }
 

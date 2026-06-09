@@ -1,10 +1,11 @@
+// services/quizService.js
 const Quiz = require('../models/Quiz');
 const QuizResult = require('../models/QuizResult');
 
 class QuizService {
-  static async getQuizzesForStudent(studentLevel, studentId) {  // ← AJOUTER studentId
+  static async getQuizzesForStudent(studentLevel, studentId) {
     const quizzes = await Quiz.findAll(studentLevel);
-    const results = await QuizResult.getStudentResults(studentId);  // ← Maintenant studentId est défini
+    const results = await QuizResult.getStudentResults(studentId);
     const resultsMap = new Map(results?.map(r => [r.quiz_id, r]));
     
     const today = new Date().toISOString().split('T')[0];
@@ -66,6 +67,11 @@ class QuizService {
       percentage,
       submitted_at: new Date().toISOString()
     });
+    
+    // ✅ AJOUTÉ - Vérifier si score parfait pour badge (optionnel)
+    if (percentage === 100) {
+      // Ici vous pouvez déclencher une vérification de badge
+    }
     
     return { score, totalQuestions, percentage, resultId: result.id };
   }

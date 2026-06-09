@@ -1,7 +1,9 @@
+// services/sessionService.js
 const AcademySession = require('../models/AcademySession');
 const Attendance = require('../models/Attendance');
 const Student = require('../models/Student');
 const { haversineDistance } = require('../utils/distance');
+const supabase = require('../config/supabase');
 
 class SessionService {
   // Générer un code aléatoire à 6 chiffres
@@ -19,7 +21,7 @@ class SessionService {
       code: code,
       expires_at: expiresAt.toISOString(),
       date: today,
-      level: level, // null = universel, 1,2,3 = niveau spécifique
+      level: level,
       lat: lat || null,
       lng: lng || null,
       radius: radius
@@ -48,7 +50,7 @@ class SessionService {
       throw new Error(`Ce code est pour le niveau ${session.level}. Votre niveau est ${student.level}`);
     }
     
-    // 4. Vérifier la géolocalisation (si position fournie)
+    // 4. Vérifier la géolocalisation
     if (session.lat && session.lng && studentLat && studentLng) {
       const distance = haversineDistance(
         session.lat, session.lng,
@@ -126,7 +128,7 @@ class SessionService {
       };
     }
     
-    // Récupérer les étudiants concernés (selon le niveau de la session)
+    // Récupérer les étudiants concernés
     let query = supabase
       .from('students')
       .select('id')
