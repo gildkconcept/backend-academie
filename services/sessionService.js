@@ -116,6 +116,18 @@ class SessionService {
     return sessionsWithStatus;
   }
 
+  // ✅ NOUVELLE MÉTHODE - Récupérer l'historique des sessions (pour superadmin)
+  static async getSessionHistory(limit = 50, offset = 0) {
+    const { data: sessions, error } = await supabase
+      .from('sessions')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+    
+    if (error) throw error;
+    return sessions || [];
+  }
+
   // Marquer les absents après expiration de la session
   static async markAbsentAfterExpiration(sessionId) {
     const session = await AcademySession.findById(sessionId);

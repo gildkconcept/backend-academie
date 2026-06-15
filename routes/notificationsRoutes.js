@@ -16,16 +16,18 @@ const {
 // Toutes les routes nécessitent une authentification
 router.use(authMiddleware);
 
-// ==================== ROUTES UTILISATEUR ====================
+// ==================== ROUTES SPÉCIFIQUES (DOIVENT ÊTRE AVANT /:id) ====================
 router.get('/', getMyNotifications);
-router.patch('/:id', markAsRead);
-router.patch('/read-all', markAllAsRead);
-router.delete('/:id', deleteNotification);
-
-// ==================== ROUTES SUPERADMIN ====================
+router.patch('/read-all', markAllAsRead);      // ← IMPORTANT : avant /:id
 router.post('/', roleMiddleware('superadmin'), createNotification);
+
+// ==================== ROUTES SUPERADMIN POUR ANNONCES ====================
 router.post('/announcement/all', roleMiddleware('superadmin'), announceToAll);
 router.post('/announcement/service/:serviceId', roleMiddleware('superadmin'), announceToService);
 router.post('/announcement/level/:level', roleMiddleware('superadmin'), announceToLevel);
+
+// ==================== ROUTES DYNAMIQUES (AVEC ID) - APRÈS LES ROUTES SPÉCIFIQUES ====================
+router.patch('/:id', markAsRead);              // Capture l'ID UUID
+router.delete('/:id', deleteNotification);
 
 module.exports = router;

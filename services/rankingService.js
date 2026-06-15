@@ -27,7 +27,7 @@ class RankingService {
       quizzesByLevel[q.level].push(q);
     });
     
-    // Récupérer les résultats
+    // Récupérer les résultats des quiz
     const { data: quizResults } = await supabase.from('quiz_results').select('student_id, quiz_id, percentage');
     const resultsMap = new Map();
     quizResults?.forEach(r => {
@@ -35,12 +35,17 @@ class RankingService {
       resultsMap.get(r.student_id).set(r.quiz_id, r.percentage);
     });
     
-    // Récupérer les sessions
-    const { data: allSessions } = await supabase.from('sessions').select('id');
-    const totalSessions = allSessions?.length || 1;
+    // ✅ Récupérer TOUTES les sessions avec leur niveau
+    const { data: allSessions } = await supabase
+      .from('sessions')
+      .select('id, level');
     
-    // Récupérer les présences
-    const { data: attendances } = await supabase.from('attendance').select('student_id, session_id').eq('status', 'present');
+    // ✅ Récupérer les présences (étudiants qui ont scanné le code)
+    const { data: attendances } = await supabase
+      .from('attendance')
+      .select('student_id, session_id')
+      .eq('status', 'present');
+    
     const presenceMap = new Map();
     attendances?.forEach(a => {
       if (!presenceMap.has(a.student_id)) presenceMap.set(a.student_id, new Set());
@@ -65,8 +70,14 @@ class RankingService {
       }
       
       const fairQuizScore = relevantQuizzes.length > 0 ? totalQuizScore / relevantQuizzes.length : 0;
-      const presenceCount = presenceMap.get(student.id)?.size || 0;
-      const fairPresenceRate = totalSessions > 0 ? (presenceCount / totalSessions) * 100 : 0;
+      
+      // ✅ Calcul des sessions (codes) pertinentes pour le niveau de l'étudiant
+      const sessionsForLevel = allSessions?.filter(s => s.level === null || s.level === studentLevel) || [];
+      const sessionsCount = sessionsForLevel.length;
+      const presentSessions = presenceMap.get(student.id)?.size || 0;
+      const missedSessions = sessionsCount - presentSessions;
+      
+      const fairPresenceRate = sessionsCount > 0 ? (presentSessions / sessionsCount) * 100 : 0;
       const finalScore = (fairQuizScore * 0.6) + (fairPresenceRate * 0.4);
       
       return {
@@ -77,9 +88,9 @@ class RankingService {
         total_quizzes_expected: relevantQuizzes.length,
         completed_quizzes: completedCount,
         missed_quizzes: relevantQuizzes.length - completedCount,
-        total_sessions_expected: totalSessions,
-        present_sessions: presenceCount,
-        missed_sessions: totalSessions - presenceCount,
+        total_sessions_expected: sessionsCount,
+        present_sessions: presentSessions,
+        missed_sessions: missedSessions,
         student: {
           id: student.id,
           full_name: student.full_name,
@@ -105,7 +116,18 @@ class RankingService {
     
     filtered.sort((a, b) => b.final_score - a.final_score);
     
-    return filtered.map((r, index) => ({ ...r, rank: index + 1 }));
+    // Calcul des statistiques
+    const totalStudents = filtered.length;
+    const averageScore = totalStudents > 0 
+      ? Math.round(filtered.reduce((acc, r) => acc + r.final_score, 0) / totalStudents)
+      : 0;
+    const totalStudentsWithMissedQuizzes = filtered.filter(r => r.missed_quizzes > 0).length;
+    const totalStudentsWithMissedSessions = filtered.filter(r => r.missed_sessions > 0).length;
+    
+    return filtered.map((r, index) => ({ 
+      ...r, 
+      rank: index + 1 
+    }));
   }
 }
 

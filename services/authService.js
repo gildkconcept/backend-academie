@@ -19,7 +19,6 @@ class AuthService {
   static async validateCredentials(username, password) {
     console.log('🔍 validateCredentials - username:', username);
     
-    // Chercher dans users (admins)
     try {
       const user = await User.findByUsername(username);
       console.log('   User trouvé:', user ? 'OUI' : 'NON');
@@ -39,7 +38,6 @@ class AuthService {
       console.log('   Erreur User.findByUsername:', err.message);
     }
     
-    // Chercher dans students
     try {
       const student = await Student.findByUsername(username);
       console.log('   Student trouvé:', student ? 'OUI' : 'NON');
@@ -82,7 +80,9 @@ class AuthService {
   }
 
   static async createStudent(studentData) {
-    const { fullName, branch, level, serviceId, baptized, phone, username, password, maisonGrace } = studentData;
+    const { fullName, branch, level, serviceId, baptized, phone, username, password, maisonGrace, hasPhone } = studentData;
+    
+    console.log('📝 [AuthService] Création étudiant:', { username, phone, hasPhone });
     
     const existing = await Student.findByUsername(username);
     if (existing) {
@@ -94,6 +94,12 @@ class AuthService {
     const prenom = nameParts[0];
     const nom = nameParts.slice(1).join(' ');
     
+    const hasPhoneValue = hasPhone === true || (phone && phone.toString().trim() !== '');
+    const finalPhone = hasPhoneValue ? (phone || null) : null;
+    
+    console.log('📱 has_phone final:', hasPhoneValue);
+    console.log('📞 Téléphone final:', finalPhone);
+    
     const student = await Student.create({
       full_name: fullName,
       prenom,
@@ -103,9 +109,10 @@ class AuthService {
       level: parseInt(level),
       service_id: serviceId,
       baptized: baptized === 'true' || baptized === true,
-      phone,
+      phone: finalPhone,
       password: hashedPassword,
       maison_grace: maisonGrace || null,
+      has_phone: hasPhoneValue
     });
     
     return student;

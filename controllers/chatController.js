@@ -1,7 +1,6 @@
 // controllers/chatController.js
 const ChatGroup = require('../models/ChatGroup');
 const ChatMessage = require('../models/ChatMessage');
-const ChatUserReadStatus = require('../models/ChatUserReadStatus');
 const Student = require('../models/Student');
 const User = require('../models/User');
 const supabase = require('../config/supabase');
@@ -22,7 +21,87 @@ const getGroups = async (req, res) => {
     }
     
     const groups = await ChatGroup.findByUserId(userId, userRole, userData);
-    res.json({ groups: groups || [] });
+    
+    // Enrichir les groupes avec les infos manquantes
+    const enrichedGroups = await Promise.all((groups || []).map(async (group) => {
+      // 1. Compter les membres
+      const { count: memberCount } = await supabase
+        .from('chat_group_members')
+        .select('*', { count: 'exact', head: true })
+        .eq('group_id', group.id);
+      
+      // 2. Traiter le dernier message
+      let lastMessage = null;
+      if (group.lastMessage) {
+        // Formater la date
+        const messageDate = new Date(group.lastMessage.created_at);
+        const now = new Date();
+        const diff = now.getTime() - messageDate.getTime();
+        
+        let timeFormatted;
+        if (diff < 60000) timeFormatted = 'À l\'instant';
+        else if (diff < 3600000) timeFormatted = `Il y a ${Math.floor(diff / 60000)} min`;
+        else if (diff < 86400000) timeFormatted = messageDate.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+        else timeFormatted = messageDate.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+        
+        // Récupérer l'avatar de l'expéditeur
+        const table = group.lastMessage.sender_type === 'student' ? 'students' : 'users';
+        const { data: userAvatar } = await supabase
+          .from(table)
+          .select('profile_image_url')
+          .eq('id', group.lastMessage.sender_id)
+          .maybeSingle();
+        
+        lastMessage = {
+          content: group.lastMessage.content,
+          senderName: group.lastMessage.sender_name,
+          senderId: group.lastMessage.sender_id,
+          senderType: group.lastMessage.sender_type,
+          senderAvatar: userAvatar?.profile_image_url || null,
+          time: timeFormatted
+        };
+      }
+      
+      // 3. Compter les messages non lus
+      let unreadCount = 0;
+      const { data: readMessages } = await supabase
+        .from('chat_message_reads')
+        .select('message_id')
+        .eq('reader_id', userId);
+      
+      const readMessageIds = new Set(readMessages?.map(r => r.message_id) || []);
+      
+      if (readMessageIds.size > 0) {
+        const { count } = await supabase
+          .from('chat_messages')
+          .select('*', { count: 'exact', head: true })
+          .eq('group_id', group.id)
+          .eq('is_deleted', false)
+          .not('id', 'in', `(${Array.from(readMessageIds).join(',')})`);
+        unreadCount = count || 0;
+      } else {
+        const { count } = await supabase
+          .from('chat_messages')
+          .select('*', { count: 'exact', head: true })
+          .eq('group_id', group.id)
+          .eq('is_deleted', false);
+        unreadCount = count || 0;
+      }
+      
+      return {
+        id: group.id,
+        name: group.name,
+        type: group.type,
+        branch: group.branch,
+        level: group.level,
+        service_id: group.service_id,
+        memberCount: memberCount || 0,
+        lastMessage,
+        unreadCount
+      };
+    }));
+    
+    res.json({ groups: enrichedGroups || [] });
   } catch (error) {
     console.error('Erreur getGroups:', error);
     res.status(500).json({ error: error.message });
@@ -129,19 +208,22 @@ const leaveGroup = async (req, res) => {
 
 /**
  * GET - Récupérer les messages d'un groupe
+ * ✅ CORRIGÉ - Autorise le superadmin même s'il n'est pas membre
  */
 const getMessages = async (req, res) => {
   try {
     const { groupId, limit = 50, before } = req.query;
     const userId = req.user.id;
+    const userRole = req.user.role;
     
     if (!groupId) {
       return res.status(400).json({ error: 'groupId requis' });
     }
     
-    // Vérifier que l'utilisateur est membre
+    // Vérifier que l'utilisateur est membre (sauf pour superadmin)
     const isMember = await ChatGroup.isMember(groupId, userId);
-    if (!isMember) {
+    
+    if (!isMember && userRole !== 'superadmin') {
       return res.status(403).json({ error: 'Accès non autorisé' });
     }
     
@@ -155,6 +237,7 @@ const getMessages = async (req, res) => {
 
 /**
  * POST - Envoyer un message
+ * ✅ CORRIGÉ - Autorise le superadmin et l'ajoute au groupe si nécessaire
  */
 const sendMessage = async (req, res) => {
   try {
@@ -167,10 +250,17 @@ const sendMessage = async (req, res) => {
       return res.status(400).json({ error: 'groupId et content requis' });
     }
     
-    // Vérifier que l'utilisateur est membre
+    // Vérifier que l'utilisateur est membre (sauf pour superadmin)
     const isMember = await ChatGroup.isMember(groupId, userId);
-    if (!isMember) {
+    
+    if (!isMember && userRole !== 'superadmin') {
       return res.status(403).json({ error: 'Accès non autorisé' });
+    }
+    
+    // Si superadmin et pas membre, l'ajouter automatiquement au groupe
+    if (!isMember && userRole === 'superadmin') {
+      await ChatGroup.addMember(groupId, userId);
+      console.log(`✅ Superadmin ${userName} ajouté au groupe ${groupId}`);
     }
     
     const message = await ChatMessage.create({
@@ -182,9 +272,6 @@ const sendMessage = async (req, res) => {
       type,
       reply_to: replyTo || null
     });
-    
-    // Marquer comme lu pour l'expéditeur
-    await ChatUserReadStatus.markAsRead(groupId, userId);
     
     res.status(201).json({ success: true, message });
   } catch (error) {
@@ -256,17 +343,60 @@ const deleteMessage = async (req, res) => {
 
 /**
  * POST - Marquer les messages d'un groupe comme lus
+ * ✅ CORRIGÉ - Autorise le superadmin même s'il n'est pas membre
  */
 const markAsRead = async (req, res) => {
   try {
     const { groupId } = req.body;
     const userId = req.user.id;
+    const userRole = req.user.role;
     
     if (!groupId) {
       return res.status(400).json({ error: 'groupId requis' });
     }
     
-    await ChatUserReadStatus.markAsRead(groupId, userId);
+    // Vérifier que l'utilisateur a accès au groupe (sauf pour superadmin)
+    const isMember = await ChatGroup.isMember(groupId, userId);
+    
+    if (!isMember && userRole !== 'superadmin') {
+      return res.status(403).json({ error: 'Accès non autorisé' });
+    }
+    
+    // Récupérer tous les messages du groupe
+    const { data: messages, error: messagesError } = await supabase
+      .from('chat_messages')
+      .select('id')
+      .eq('group_id', groupId);
+    
+    if (messagesError) throw messagesError;
+    
+    if (messages && messages.length > 0) {
+      const messageIds = messages.map(msg => msg.id);
+      
+      // 1. Supprimer les anciennes entrées de lecture pour ces messages
+      const { error: deleteError } = await supabase
+        .from('chat_message_reads')
+        .delete()
+        .in('message_id', messageIds)
+        .eq('reader_id', userId);
+      
+      if (deleteError) throw deleteError;
+      
+      // 2. Insérer les nouvelles entrées de lecture
+      const reads = messages.map(msg => ({
+        message_id: msg.id,
+        reader_id: userId,
+        reader_type: userRole === 'student' ? 'student' : userRole,
+        read_at: new Date().toISOString()
+      }));
+      
+      const { error: insertError } = await supabase
+        .from('chat_message_reads')
+        .insert(reads);
+      
+      if (insertError) throw insertError;
+    }
+    
     res.json({ success: true });
   } catch (error) {
     console.error('Erreur markAsRead:', error);

@@ -8,7 +8,7 @@ const {
   deleteStudent,
   updateStudentLevel,
   bulkPromote,
-  getLevelHistory,           // ← AJOUTER
+  getLevelHistory,
 } = require('../controllers/studentController');
 const { authMiddleware, roleMiddleware } = require('../middleware/auth');
 const supabase = require('../config/supabase');
@@ -17,7 +17,7 @@ const bcrypt = require('bcryptjs');
 // Routes protégées
 router.use(authMiddleware);
 
-// ==================== ROUTES EXISTANTES ====================
+// ==================== ROUTES SPÉCIFIQUES (AVANT /:id) ====================
 
 // GET - Liste des étudiants (avec filtres)
 router.get('/', getAllStudents);
@@ -39,28 +39,35 @@ router.get('/branches', async (req, res) => {
   }
 });
 
-// GET - Étudiant par ID
-router.get('/:id', getStudentById);
-
-// ✅ NOUVEAU - Historique des changements de niveau
-router.get('/:id/level-history', roleMiddleware('superadmin'), getLevelHistory);
-
-// POST - Ajouter un étudiant (manager ou superadmin)
-router.post('/', roleMiddleware('superadmin', 'service_manager'), addStudent);
-
-// PUT - Modifier un étudiant
-router.put('/:id', roleMiddleware('superadmin', 'service_manager'), updateStudent);
-
-// DELETE - Supprimer un étudiant (soft delete)
-router.delete('/:id', roleMiddleware('superadmin', 'service_manager'), deleteStudent);
-
-// PUT - Changer le niveau (superadmin uniquement)
-router.put('/:id/level', roleMiddleware('superadmin'), updateStudentLevel);
-
-// POST - Promotion en masse (superadmin uniquement)
-router.post('/bulk-promote', roleMiddleware('superadmin'), bulkPromote);
-
-// ==================== NOUVELLES ROUTES ====================
+// GET - Étudiants avec statistiques (pour les graphiques)
+router.get('/with-stats', async (req, res) => {
+  try {
+    const { serviceId, level, branch } = req.query;
+    
+    let query = supabase
+      .from('students')
+      .select('*, services(id, name)')
+      .is('deleted_at', null);
+    
+    if (serviceId && serviceId !== 'all') {
+      query = query.eq('service_id', serviceId);
+    }
+    if (level && level !== 'all') {
+      query = query.eq('level', parseInt(level));
+    }
+    if (branch && branch !== 'all') {
+      query = query.eq('branch', branch);
+    }
+    
+    const { data: students, error } = await query;
+    if (error) throw error;
+    
+    res.json(students || []);
+  } catch (error) {
+    console.error('Erreur getStudentsWithStats:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // GET - Récupérer les étudiants supprimés (soft delete)
 router.get('/deleted', roleMiddleware('superadmin'), async (req, res) => {
@@ -79,26 +86,7 @@ router.get('/deleted', roleMiddleware('superadmin'), async (req, res) => {
   }
 });
 
-// POST - Restaurer un étudiant supprimé
-router.post('/:id/restore', roleMiddleware('superadmin'), async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    const { error } = await supabase
-      .from('students')
-      .update({ deleted_at: null, updated_at: new Date().toISOString() })
-      .eq('id', id);
-    
-    if (error) throw error;
-    
-    res.json({ success: true, message: 'Étudiant restauré avec succès' });
-  } catch (error) {
-    console.error('Erreur restauration:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// GET - Statistiques des étudiants sans téléphone
+// ✅ CORRIGÉ - Statistiques des étudiants sans téléphone (AVANT /:id)
 router.get('/no-phone-stats', roleMiddleware('superadmin'), async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -115,65 +103,6 @@ router.get('/no-phone-stats', roleMiddleware('superadmin'), async (req, res) => 
     });
   } catch (error) {
     console.error('Erreur stats no phone:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// POST - Créer un étudiant sans téléphone
-router.post('/create-no-phone', roleMiddleware('superadmin'), async (req, res) => {
-  try {
-    const { fullName, branch, level, serviceId, baptized, maisonGrace, profileImageUrl } = req.body;
-    
-    if (!fullName || !branch || !serviceId) {
-      return res.status(400).json({ error: 'Champs obligatoires manquants' });
-    }
-    
-    let username = fullName.toLowerCase().replace(/\s/g, '');
-    let counter = 1;
-    let existing = await supabase.from('students').select('id').eq('username', username).single();
-    while (existing.data) {
-      username = `${fullName.toLowerCase().replace(/\s/g, '')}${counter}`;
-      existing = await supabase.from('students').select('id').eq('username', username).single();
-      counter++;
-    }
-    
-    const defaultPassword = 'default123';
-    const hashedPassword = await bcrypt.hash(defaultPassword, 10);
-    
-    const nameParts = fullName.split(' ');
-    const prenom = nameParts[0];
-    const nom = nameParts.slice(1).join(' ');
-    
-    const { data, error } = await supabase
-      .from('students')
-      .insert({
-        full_name: fullName,
-        prenom,
-        nom,
-        username,
-        branch,
-        level: parseInt(level),
-        service_id: serviceId,
-        baptized: baptized === 'true' || baptized === true,
-        maison_grace: maisonGrace || null,
-        profile_image_url: profileImageUrl || null,
-        password: hashedPassword,
-        has_phone: false,
-        phone: null
-      })
-      .select()
-      .single();
-    
-    if (error) throw error;
-    
-    res.status(201).json({
-      success: true,
-      message: 'Étudiant sans téléphone créé avec succès',
-      student: data,
-      defaultPassword
-    });
-  } catch (error) {
-    console.error('Erreur création no phone:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -239,5 +168,106 @@ router.get('/by-level', roleMiddleware('superadmin'), async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// ==================== ROUTES AVEC PARAMÈTRE ID (APRÈS) ====================
+
+// GET - Étudiant par ID (doit être APRÈS toutes les routes spécifiques)
+router.get('/:id', getStudentById);
+
+// GET - Historique des changements de niveau
+router.get('/:id/level-history', roleMiddleware('superadmin'), getLevelHistory);
+
+// POST - Restaurer un étudiant supprimé
+router.post('/:id/restore', roleMiddleware('superadmin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const { error } = await supabase
+      .from('students')
+      .update({ deleted_at: null, updated_at: new Date().toISOString() })
+      .eq('id', id);
+    
+    if (error) throw error;
+    
+    res.json({ success: true, message: 'Étudiant restauré avec succès' });
+  } catch (error) {
+    console.error('Erreur restauration:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST - Ajouter un étudiant (manager ou superadmin)
+router.post('/', roleMiddleware('superadmin', 'service_manager'), addStudent);
+
+// POST - Créer un étudiant sans téléphone
+router.post('/create-no-phone', roleMiddleware('superadmin'), async (req, res) => {
+  try {
+    const { fullName, branch, level, serviceId, baptized, maisonGrace, profileImageUrl } = req.body;
+    
+    if (!fullName || !branch || !serviceId) {
+      return res.status(400).json({ error: 'Champs obligatoires manquants' });
+    }
+    
+    let username = fullName.toLowerCase().replace(/\s/g, '');
+    let counter = 1;
+    let existing = await supabase.from('students').select('id').eq('username', username).single();
+    while (existing.data) {
+      username = `${fullName.toLowerCase().replace(/\s/g, '')}${counter}`;
+      existing = await supabase.from('students').select('id').eq('username', username).single();
+      counter++;
+    }
+    
+    const defaultPassword = 'default123';
+    const hashedPassword = await bcrypt.hash(defaultPassword, 10);
+    
+    const nameParts = fullName.split(' ');
+    const prenom = nameParts[0];
+    const nom = nameParts.slice(1).join(' ');
+    
+    const { data, error } = await supabase
+      .from('students')
+      .insert({
+        full_name: fullName,
+        prenom,
+        nom,
+        username,
+        branch,
+        level: parseInt(level),
+        service_id: serviceId,
+        baptized: baptized === 'true' || baptized === true,
+        maison_grace: maisonGrace || null,
+        profile_image_url: profileImageUrl || null,
+        password: hashedPassword,
+        has_phone: false,
+        phone: null
+      })
+      .select()
+      .single();
+    
+    if (error) throw error;
+    
+    res.status(201).json({
+      success: true,
+      message: 'Étudiant sans téléphone créé avec succès',
+      student: data,
+      defaultPassword
+    });
+  } catch (error) {
+    console.error('Erreur création no phone:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PUT - Modifier un étudiant
+router.put('/:id', roleMiddleware('superadmin', 'service_manager'), updateStudent);
+
+// PUT - Changer le niveau (superadmin uniquement)
+router.put('/:id/level', roleMiddleware('superadmin'), updateStudentLevel);
+
+// DELETE - Supprimer un étudiant (soft delete)
+router.delete('/:id', roleMiddleware('superadmin', 'service_manager'), deleteStudent);
+
+// POST - Promotion en masse (superadmin uniquement)
+router.post('/bulk-promote', roleMiddleware('superadmin'), bulkPromote);
 
 module.exports = router;

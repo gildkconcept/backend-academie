@@ -5,6 +5,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const morgan = require('morgan');
 const { body, validationResult } = require('express-validator');
+const { authMiddleware } = require('./middleware/auth');
 
 // Routes
 const authRoutes = require('./routes/authRoutes');
@@ -25,23 +26,45 @@ const profileRoutes = require('./routes/profileRoutes');
 const badgesRoutes = require('./routes/badgesRoutes');
 const notificationsRoutes = require('./routes/notificationsRoutes');
 const chatRoutes = require('./routes/chatRoutes');
+const attendanceRoutes = require('./routes/attendanceRoutes');
 
 const app = express();
 
-// Sécurité 
-app.use(helmet());
+const isDev = process.env.NODE_ENV !== 'production';
 
+// ==================== CORS (DOIT ÊTRE EN PREMIER) ====================
+const corsOptions = {
+  origin: ['http://localhost:3000', 'http://localhost:3001'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'Cookie'],
+  optionsSuccessStatus: 200,
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
+
+// ==================== SÉCURITÉ ====================
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
+
+// ==================== RATE LIMITERS ====================
 const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
+  windowMs: 15 * 60 * 1000,
+  max: isDev ? 1000 : 100,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Trop de requêtes, réessayez dans 15 minutes.' },
+  skip: (req) => {
+    const skippedRoutes = ['/api/verses/today', '/api/health'];
+    return skippedRoutes.some(route => req.path.startsWith(route));
+  },
 });
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10,
+  max: isDev ? 100 : 10,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Trop de tentatives de connexion, réessayez dans 15 minutes.' },
@@ -49,33 +72,36 @@ const authLimiter = rateLimit({
 
 app.use(globalLimiter);
 
-// CORS 
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  credentials: true,
-}));
-
-// Middlewares de base 
+// ==================== MIDDLEWARES DE BASE ====================
 app.use(express.json({ limit: '10kb' }));
 app.use(cookieParser());
 
-// Logging HTTP
-const morganFormat = process.env.NODE_ENV === 'production'
-  ? ':remote-addr :method :url :status :res[content-length] - :response-time ms'
-  : 'dev';
+// ==================== LOGGING HTTP ====================
+const morganFormat = isDev ? 'dev' : ':remote-addr :method :url :status :res[content-length] - :response-time ms';
 
 app.use(morgan(morganFormat, {
-  skip: (req) => req.url === '/api/health', 
+  skip: (req) => req.url === '/api/health',
 }));
 
-// ==================== ROUTES ====================
+// ==================== ROUTES PUBLIQUES ====================
 app.use('/api/auth', authLimiter, authRoutes);
-app.use('/api/students', studentRoutes);
+
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+});
+
 app.use('/api/services', serviceRoutes);
+app.use('/api/attendance', attendanceRoutes);
+app.use('/api/verses', verseRoutes); // /today public, reste protégé dans le router
+
+// ==================== MIDDLEWARE AUTH GLOBAL ====================
+app.use(authMiddleware);
+
+// ==================== ROUTES PROTÉGÉES ====================
+app.use('/api/students', studentRoutes);
 app.use('/api/sessions', sessionRoutes);
 app.use('/api/quizzes', quizRoutes);
 app.use('/api/rankings', rankingRoutes);
-app.use('/api/verses', verseRoutes);
 app.use('/api/live', liveRoutes);
 app.use('/api/stats', statsRoutes);
 app.use('/api/session-types', sessionTypesRoutes);
@@ -88,12 +114,7 @@ app.use('/api/badges', badgesRoutes);
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api/chat', chatRoutes);
 
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
-});
-
-// 404 - Route non trouvée
+// ==================== 404 ====================
 app.use((req, res, next) => {
   res.status(404).json({
     error: 'Route introuvable',
@@ -102,7 +123,7 @@ app.use((req, res, next) => {
   });
 });
 
-// Error handler global
+// ==================== ERROR HANDLER GLOBAL ====================
 app.use((err, req, res, next) => {
   if (err.type === 'validation') {
     return res.status(422).json({
@@ -110,20 +131,16 @@ app.use((err, req, res, next) => {
       details: err.details,
     });
   }
-  
-  // Body JSON malformé
+
   if (err.type === 'entity.parse.failed') {
     return res.status(400).json({ error: 'JSON malformé' });
   }
 
-  // Body trop volumineux
   if (err.status === 413) {
     return res.status(413).json({ error: 'Requête trop volumineuse' });
   }
 
-  // Erreur générique
   const status = err.status || err.statusCode || 500;
-  const isDev = process.env.NODE_ENV !== 'production';
 
   console.error(JSON.stringify({
     level: 'ERROR',
@@ -140,7 +157,7 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Helper validation
+// ==================== HELPER VALIDATION ====================
 function validate(rules) {
   return async (req, res, next) => {
     await Promise.all(rules.map(rule => rule.run(req)));

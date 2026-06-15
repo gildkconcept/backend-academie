@@ -39,6 +39,19 @@ class ChatGroup {
   }
 
   /**
+   * Compter les membres d'un groupe
+   */
+  static async countMembers(groupId) {
+    const { count, error } = await supabase
+      .from('chat_group_members')
+      .select('*', { count: 'exact', head: true })
+      .eq('group_id', groupId);
+    
+    if (error) throw error;
+    return count || 0;
+  }
+
+  /**
    * Récupérer les groupes d'un utilisateur avec leurs messages non lus
    */
   static async findByUserId(userId, userRole, userData = null) {
@@ -77,19 +90,36 @@ class ChatGroup {
         .limit(1)
         .maybeSingle();
       
-      // Nombre de messages non lus
-      const { count: unreadCount } = await supabase
+      // ✅ CORRIGÉ - Utiliser chat_message_reads au lieu de chat_user_read_status
+      // Récupérer les IDs des messages déjà lus par l'utilisateur
+      const { data: readMessages } = await supabase
+        .from('chat_message_reads')
+        .select('message_id')
+        .eq('reader_id', userId);
+      
+      const readMessageIds = new Set(readMessages?.map(r => r.message_id) || []);
+      
+      // Compter les messages non lus
+      const { count: unreadCount, error: countError } = await supabase
         .from('chat_messages')
         .select('*', { count: 'exact', head: true })
         .eq('group_id', group.id)
         .eq('is_deleted', false)
-        .gt('created_at', 
-          supabase.from('chat_user_read_status')
-            .select('last_read_at')
-            .eq('group_id', group.id)
-            .eq('user_id', userId)
-            .maybeSingle()
-        );
+        .not('id', 'in', `(${Array.from(readMessageIds).join(',') || 'NULL'})`);
+      
+      if (countError && !readMessageIds.size) {
+        // Si pas de messages lus, compter tous les messages
+        const { count } = await supabase
+          .from('chat_messages')
+          .select('*', { count: 'exact', head: true })
+          .eq('group_id', group.id)
+          .eq('is_deleted', false);
+        return {
+          ...group,
+          lastMessage,
+          unreadCount: count || 0
+        };
+      }
       
       return {
         ...group,

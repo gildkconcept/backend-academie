@@ -77,11 +77,12 @@ class Notification {
 
   /**
    * Marquer une notification comme lue
+   * ✅ CORRIGÉ - Met à jour uniquement is_read
    */
   static async markAsRead(id, userId) {
     const { error } = await supabase
       .from('notifications')
-      .update({ is_read: true, read_at: new Date().toISOString() })
+      .update({ is_read: true })
       .eq('id', id)
       .eq('user_id', userId);
     
@@ -90,11 +91,12 @@ class Notification {
 
   /**
    * Marquer toutes les notifications d'un utilisateur comme lues
+   * ✅ CORRIGÉ - Met à jour uniquement is_read
    */
   static async markAllAsRead(userId) {
     const { error } = await supabase
       .from('notifications')
-      .update({ is_read: true, read_at: new Date().toISOString() })
+      .update({ is_read: true })
       .eq('user_id', userId)
       .eq('is_read', false);
     

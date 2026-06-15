@@ -1,7 +1,6 @@
 const supabase = require('../config/supabase');
 
 class Student {
-  // Trouver tous les étudiants
   static async findAll(filters = {}) {
     let query = supabase
       .from('students')
@@ -24,7 +23,6 @@ class Student {
     return data;
   }
 
-  // Trouver par username
   static async findByUsername(username) {
     const { data, error } = await supabase
       .from('students')
@@ -37,7 +35,6 @@ class Student {
     return data;
   }
 
-  // Trouver par ID
   static async findById(id) {
     const { data, error } = await supabase
       .from('students')
@@ -50,11 +47,35 @@ class Student {
     return data;
   }
 
-  // Créer un étudiant
   static async create(studentData) {
+    const hasPhoneValue = studentData.has_phone === true;
+    const phoneValue = hasPhoneValue ? (studentData.phone || null) : null;
+    
+    const dataToInsert = {
+      full_name: studentData.full_name,
+      prenom: studentData.prenom,
+      nom: studentData.nom,
+      username: studentData.username,
+      branch: studentData.branch,
+      level: studentData.level,
+      service_id: studentData.service_id,
+      baptized: studentData.baptized,
+      phone: phoneValue,
+      password: studentData.password,
+      maison_grace: studentData.maison_grace || null,
+      has_phone: hasPhoneValue,
+      created_at: new Date().toISOString()
+    };
+    
+    console.log('📝 [Student.create] Insertion:', { 
+      full_name: dataToInsert.full_name, 
+      phone: dataToInsert.phone, 
+      has_phone: dataToInsert.has_phone 
+    });
+    
     const { data, error } = await supabase
       .from('students')
-      .insert(studentData)
+      .insert(dataToInsert)
       .select()
       .single();
     
@@ -62,7 +83,6 @@ class Student {
     return data;
   }
 
-  // Mettre à jour
   static async update(id, updateData) {
     const { data, error } = await supabase
       .from('students')
@@ -75,7 +95,6 @@ class Student {
     return data;
   }
 
-  // Suppression logique
   static async softDelete(id) {
     const { error } = await supabase
       .from('students')
