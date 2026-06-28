@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const supabase = require('../config/supabase');
-const { authMiddleware } = require('../middleware/auth');
+const { authMiddleware, roleMiddleware } = require('../middleware/auth');
 
 // ==================== ROUTES PUBLIQUES (si nécessaire) ====================
 
@@ -112,15 +112,13 @@ router.get('/assisted', async (req, res) => {
     console.log('📋 Session:', { code: session.code, level: session.level });
     
     // 2. Récupérer les étudiants UNIQUEMENT sans téléphone
-    // Filtrer directement dans la requête SQL
     let query = supabase
       .from('students')
       .select('id, full_name, branch, level, phone, has_phone, maison_grace')
       .is('deleted_at', null)
-      .or('has_phone.eq.false,phone.is.null,phone.eq.')  // ← FILTRE SQL
+      .or('has_phone.eq.false,phone.is.null,phone.eq.')
       .order('full_name');
     
-    // Filtrer par niveau si la session est limitée à un niveau
     if (session.level !== null) {
       query = query.eq('level', session.level);
     }
@@ -134,7 +132,7 @@ router.get('/assisted', async (req, res) => {
     
     console.log(`📋 Étudiants sans téléphone trouvés (SQL): ${students?.length || 0}`);
     
-    // 3. Récupérer les présences déjà enregistrées pour cette session
+    // 3. Récupérer les présences déjà enregistrées
     const { data: existingAttendances, error: attendanceError } = await supabase
       .from('attendance')
       .select('student_id, status')
@@ -144,7 +142,6 @@ router.get('/assisted', async (req, res) => {
       console.error('Erreur récupération présences:', attendanceError);
     }
     
-    // Créer un map des statuts existants
     const statusMap = new Map();
     if (existingAttendances) {
       existingAttendances.forEach(att => {
@@ -152,7 +149,6 @@ router.get('/assisted', async (req, res) => {
       });
     }
     
-    // 4. Formater la réponse
     const formattedStudents = (students || []).map(s => ({
       id: s.id,
       full_name: s.full_name,
@@ -165,7 +161,6 @@ router.get('/assisted', async (req, res) => {
     
     console.log(`📋 ${formattedStudents.length} étudiant(s) sans téléphone retourné(s)`);
     
-    // Afficher les noms pour debug
     if (formattedStudents.length > 0) {
       console.log('📋 Liste des étudiants:', formattedStudents.map(s => s.full_name).join(', '));
     }
@@ -192,7 +187,6 @@ router.post('/assisted', async (req, res) => {
     const today = new Date().toISOString().split('T')[0];
     const now = new Date().toISOString();
     
-    // Préparer les données d'insertion
     const attendanceRecords = attendances.map(att => ({
       student_id: att.studentId,
       session_id: sessionId,
@@ -202,7 +196,6 @@ router.post('/assisted', async (req, res) => {
       method: 'manual'
     }));
     
-    // Supprimer les anciennes entrées pour éviter les doublons
     const studentIds = attendances.map(att => att.studentId);
     const { error: deleteError } = await supabase
       .from('attendance')
@@ -214,7 +207,6 @@ router.post('/assisted', async (req, res) => {
       console.error('Erreur suppression anciennes présences:', deleteError);
     }
     
-    // Insérer les nouvelles présences
     const { error: insertError } = await supabase
       .from('attendance')
       .insert(attendanceRecords);
@@ -228,6 +220,100 @@ router.post('/assisted', async (req, res) => {
     res.json({ success: true, message: `${attendances.length} présence(s) enregistrée(s)` });
   } catch (error) {
     console.error('Erreur save assisted attendance:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==================== NOUVELLES ROUTES POUR L'HISTORIQUE DES CODES ====================
+
+// GET - Statistiques d'une session
+router.get('/session/:sessionId/stats', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    const { data: attendances, error } = await supabase
+      .from('attendance')
+      .select('status')
+      .eq('session_id', sessionId);
+    
+    if (error) throw error;
+    
+    const present = attendances?.filter(a => a.status === 'present').length || 0;
+    const absent = attendances?.filter(a => a.status === 'absent').length || 0;
+    const late = attendances?.filter(a => a.status === 'late').length || 0;
+    const total = attendances?.length || 0;
+    
+    res.json({
+      total,
+      present,
+      absent,
+      late,
+      rate: total > 0 ? Math.round((present / total) * 100) : 0
+    });
+  } catch (error) {
+    console.error('Erreur stats session:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET - Étudiants d'une session
+router.get('/session/:sessionId/students', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    const { data: attendances, error } = await supabase
+      .from('attendance')
+      .select(`
+        *,
+        students(id, full_name, branch, level, phone)
+      `)
+      .eq('session_id', sessionId);
+    
+    if (error) throw error;
+    
+    const formatted = (attendances || []).map(a => ({
+      id: a.id,
+      student_id: a.student_id,
+      student_name: a.students?.full_name || 'N/A',
+      branch: a.students?.branch || '-',
+      level: a.students?.level || 1,
+      phone: a.students?.phone || '-',
+      status: a.status,
+      scanned_at: a.scanned_at,
+      method: a.method || 'code'
+    }));
+    
+    res.json(formatted);
+  } catch (error) {
+    console.error('Erreur étudiants session:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE - Supprimer une session (superadmin uniquement)
+router.delete('/sessions/:sessionId', roleMiddleware('superadmin'), async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    // 1. Supprimer les présences liées
+    const { error: attendanceError } = await supabase
+      .from('attendance')
+      .delete()
+      .eq('session_id', sessionId);
+    
+    if (attendanceError) throw attendanceError;
+    
+    // 2. Supprimer la session
+    const { error: sessionError } = await supabase
+      .from('sessions')
+      .delete()
+      .eq('id', sessionId);
+    
+    if (sessionError) throw sessionError;
+    
+    res.json({ success: true, message: 'Session supprimée avec succès' });
+  } catch (error) {
+    console.error('Erreur suppression session:', error);
     res.status(500).json({ error: error.message });
   }
 });
