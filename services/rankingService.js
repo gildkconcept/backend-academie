@@ -35,12 +35,12 @@ class RankingService {
       resultsMap.get(r.student_id).set(r.quiz_id, r.percentage);
     });
     
-    // ✅ Récupérer TOUTES les sessions avec leur niveau
+    // Récupérer TOUTES les sessions avec leur niveau
     const { data: allSessions } = await supabase
       .from('sessions')
       .select('id, level');
     
-    // ✅ Récupérer les présences (étudiants qui ont scanné le code)
+    // Récupérer les présences (étudiants qui ont scanné le code)
     const { data: attendances } = await supabase
       .from('attendance')
       .select('student_id, session_id')
@@ -71,7 +71,7 @@ class RankingService {
       
       const fairQuizScore = relevantQuizzes.length > 0 ? totalQuizScore / relevantQuizzes.length : 0;
       
-      // ✅ Calcul des sessions (codes) pertinentes pour le niveau de l'étudiant
+      // Calcul des sessions (codes) pertinentes pour le niveau de l'étudiant
       const sessionsForLevel = allSessions?.filter(s => s.level === null || s.level === studentLevel) || [];
       const sessionsCount = sessionsForLevel.length;
       const presentSessions = presenceMap.get(student.id)?.size || 0;
@@ -124,10 +124,22 @@ class RankingService {
     const totalStudentsWithMissedQuizzes = filtered.filter(r => r.missed_quizzes > 0).length;
     const totalStudentsWithMissedSessions = filtered.filter(r => r.missed_sessions > 0).length;
     
-    return filtered.map((r, index) => ({ 
+    // ✅ Retourner les rankings ET les stats
+    const rankedResults = filtered.map((r, index) => ({ 
       ...r, 
       rank: index + 1 
     }));
+    
+    return {
+      rankings: rankedResults,
+      stats: {
+        totalStudents,
+        averageScore,
+        totalStudentsWithMissedQuizzes,
+        totalStudentsWithMissedSessions
+      },
+      isFair: true
+    };
   }
 }
 

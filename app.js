@@ -27,14 +27,34 @@ const badgesRoutes = require('./routes/badgesRoutes');
 const notificationsRoutes = require('./routes/notificationsRoutes');
 const chatRoutes = require('./routes/chatRoutes');
 const attendanceRoutes = require('./routes/attendanceRoutes');
+// ✅ NOUVEAU - Import des routes WhatsApp
+const whatsappRoutes = require('./routes/whatsappRoutes');
 
 const app = express();
 
 const isDev = process.env.NODE_ENV !== 'production';
 
 // ==================== CORS (DOIT ÊTRE EN PREMIER) ====================
+// ✅ CORRIGÉ - Supporte plusieurs origines dynamiquement
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'https://academie-de-la-grace-gold.vercel.app',
+  process.env.FRONTEND_URL
+].filter(Boolean);
+
 const corsOptions = {
-  origin: ['http://localhost:3000', 'http://localhost:3001'],
+  origin: function(origin, callback) {
+    // Permettre les requêtes sans origine (ex: Postman, apps mobiles)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
+      callback(null, true);
+    } else {
+      console.log(`❌ CORS bloqué pour: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'Cookie'],
@@ -113,6 +133,8 @@ app.use('/api/profile', profileRoutes);
 app.use('/api/badges', badgesRoutes);
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api/chat', chatRoutes);
+// ✅ NOUVEAU - Routes WhatsApp
+app.use('/api/whatsapp', whatsappRoutes);
 
 // ==================== 404 ====================
 app.use((req, res, next) => {
