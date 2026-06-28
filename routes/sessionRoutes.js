@@ -8,7 +8,8 @@ const {
   markAbsent,
   getSessionHistory,
   getSessionDetails,
-  getAllSessionsHistory
+  getAllSessionsHistory,
+  getAdminSessionHistory  // ✅ NOUVEAU
 } = require('../controllers/sessionController');
 const { authMiddleware, roleMiddleware } = require('../middleware/auth');
 
@@ -24,8 +25,11 @@ router.post('/verify', verifyCode);
 // GET - Sessions actives pour l'étudiant connecté
 router.get('/active', getActiveSessions);
 
-// GET - Historique des sessions de l'étudiant
+// ✅ Route pour l'historique des sessions de l'étudiant
 router.get('/history', getSessionHistory);
+
+// ✅ NOUVELLE ROUTE - Historique des sessions pour superadmin (avec filtres)
+router.get('/admin-history', roleMiddleware('superadmin'), getAdminSessionHistory);
 
 // GET - Récupérer toutes les sessions (superadmin)
 router.get('/all-history', roleMiddleware('superadmin'), getAllSessionsHistory);

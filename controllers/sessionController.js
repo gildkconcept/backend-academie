@@ -132,6 +132,50 @@ const getAllSessionsHistory = async (req, res) => {
   }
 };
 
+// ✅ NOUVELLE FONCTION - Historique des sessions pour superadmin (avec filtres)
+const getAdminSessionHistory = async (req, res) => {
+  try {
+    // Vérifier que l'utilisateur est superadmin
+    if (req.user.role !== 'superadmin') {
+      return res.status(403).json({ error: 'Accès refusé' });
+    }
+    
+    const { limit = 50, offset = 0, level, date } = req.query;
+    const supabase = require('../config/supabase');
+    
+    let query = supabase
+      .from('sessions')
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false });
+    
+    // ✅ Filtre par niveau
+    if (level && level !== 'all') {
+      query = query.eq('level', parseInt(level));
+    }
+    
+    // ✅ Filtre par date
+    if (date) {
+      query = query.eq('date', date);
+    }
+    
+    // Pagination
+    query = query.range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
+    
+    const { data: sessions, error, count } = await query;
+    
+    if (error) throw error;
+    
+    res.json({
+      success: true,
+      sessions: sessions || [],
+      total: count || 0
+    });
+  } catch (error) {
+    console.error('Erreur getAdminSessionHistory:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
 // Récupérer les détails d'une session spécifique
 const getSessionDetails = async (req, res) => {
   try {
@@ -174,5 +218,6 @@ module.exports = {
   markAbsent,
   getSessionHistory,
   getSessionDetails,
-  getAllSessionsHistory 
+  getAllSessionsHistory,
+  getAdminSessionHistory  // ✅ AJOUTÉ
 };
