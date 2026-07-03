@@ -41,6 +41,7 @@ const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:3001',
   'https://academie-de-la-grace-gold.vercel.app',
+    'https://www.academiedelagrace.org',
   process.env.FRONTEND_URL
 ].filter(Boolean);
 
