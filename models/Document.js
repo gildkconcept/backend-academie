@@ -30,7 +30,7 @@ class Document {
     static async findAll(filters = {}) {
         let query = supabase
             .from('documents')
-            .select('*, services(name), users(name as creator_name)')
+            .select('*, services(name)')
             .order('created_at', { ascending: false });
 
         if (filters.level) query = query.eq('level', filters.level);
@@ -83,7 +83,7 @@ class Document {
     static async findById(id) {
         const { data, error } = await supabase
             .from('documents')
-            .select('*, services(name), users(name as creator_name)')
+            .select('*, services(name)')
             .eq('id', id)
             .single();
 
