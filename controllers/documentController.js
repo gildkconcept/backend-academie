@@ -10,6 +10,7 @@ const upload = multer({
     limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB max
     fileFilter: (req, file, cb) => {
         const allowedTypes = ['application/pdf'];
+        console.log('📄 Type de fichier:', file.mimetype);
         if (allowedTypes.includes(file.mimetype)) {
             cb(null, true);
         } else {
@@ -24,7 +25,8 @@ const uploadCover = multer({
     storage: coverStorage,
     limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB max
     fileFilter: (req, file, cb) => {
-        const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
+        const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+        console.log('📸 Type de fichier:', file.mimetype);
         if (allowedTypes.includes(file.mimetype)) {
             cb(null, true);
         } else {
@@ -89,6 +91,8 @@ const createDocument = async (req, res) => {
             coverImageUrl
         } = req.body;
 
+        console.log('📝 Création document:', { title, fileUrl, fileName });
+
         if (!title || !fileUrl) {
             return res.status(400).json({ error: 'Le titre et le fichier sont requis' });
         }
@@ -98,8 +102,8 @@ const createDocument = async (req, res) => {
             description,
             file_url: fileUrl,
             file_name: fileName,
-            file_size: fileSize,
-            cover_image_url: coverImageUrl,
+            file_size: fileSize || 0,
+            cover_image_url: coverImageUrl || null,
             level: level || null,
             branch: branch || null,
             service_id: serviceId || null,
@@ -136,8 +140,8 @@ const updateDocument = async (req, res) => {
             description,
             file_url: fileUrl,
             file_name: fileName,
-            file_size: fileSize,
-            cover_image_url: coverImageUrl,
+            file_size: fileSize || 0,
+            cover_image_url: coverImageUrl || null,
             level: level || null,
             branch: branch || null,
             service_id: serviceId || null,
@@ -170,7 +174,6 @@ const downloadDocument = async (req, res) => {
         
         const document = await DocumentService.downloadDocument(id, studentId, req);
         
-        // Rediriger vers l'URL du fichier
         res.json({
             success: true,
             url: document.file_url,
@@ -221,7 +224,13 @@ const uploadFile = async (req, res) => {
             return res.status(400).json({ error: 'Aucun fichier fourni' });
         }
 
+        console.log('📤 Upload du fichier:', req.file.originalname);
+        console.log('📏 Taille:', req.file.size, 'bytes');
+
         const result = await DocumentService.uploadFile(req.file);
+        
+        console.log('✅ Fichier uploadé:', result.url);
+        
         res.json({
             success: true,
             url: result.url,
@@ -230,7 +239,7 @@ const uploadFile = async (req, res) => {
             path: result.path
         });
     } catch (error) {
-        console.error('Erreur uploadFile:', error);
+        console.error('❌ Erreur uploadFile:', error);
         res.status(500).json({ error: error.message });
     }
 };
