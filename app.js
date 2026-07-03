@@ -29,6 +29,7 @@ const chatRoutes = require('./routes/chatRoutes');
 const attendanceRoutes = require('./routes/attendanceRoutes');
 // ✅ NOUVEAU - Import des routes WhatsApp
 const whatsappRoutes = require('./routes/whatsappRoutes');
+const documentRoutes = require('./routes/documentRoutes');
 
 const app = express();
 
@@ -135,6 +136,7 @@ app.use('/api/notifications', notificationsRoutes);
 app.use('/api/chat', chatRoutes);
 // ✅ NOUVEAU - Routes WhatsApp
 app.use('/api/whatsapp', whatsappRoutes);
+app.use('/api/documents', documentRoutes);
 
 // ==================== 404 ====================
 app.use((req, res, next) => {
