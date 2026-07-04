@@ -9,12 +9,26 @@ const upload = multer({
     storage,
     limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB max
     fileFilter: (req, file, cb) => {
-        const allowedTypes = ['application/pdf'];
-        console.log('📄 Type de fichier:', file.mimetype);
-        if (allowedTypes.includes(file.mimetype)) {
+        // ✅ Accepter plusieurs types MIME pour les PDF
+        const allowedTypes = [
+            'application/pdf',
+            'application/x-pdf',
+            'application/acrobat',
+            'applications/vnd.pdf',
+            'text/pdf'
+        ];
+        
+        console.log('📄 Type de fichier reçu:', file.mimetype);
+        console.log('📄 Nom du fichier:', file.originalname);
+        
+        // ✅ Vérifier aussi par l'extension
+        const ext = file.originalname.split('.').pop()?.toLowerCase();
+        const isPDF = allowedTypes.includes(file.mimetype) || ext === 'pdf';
+        
+        if (isPDF) {
             cb(null, true);
         } else {
-            cb(new Error('Seuls les fichiers PDF sont autorisés'));
+            cb(new Error(`Seuls les fichiers PDF sont autorisés. Type reçu: ${file.mimetype}`));
         }
     }
 });
@@ -226,6 +240,7 @@ const uploadFile = async (req, res) => {
 
         console.log('📤 Upload du fichier:', req.file.originalname);
         console.log('📏 Taille:', req.file.size, 'bytes');
+        console.log('📁 Type MIME:', req.file.mimetype);
 
         const result = await DocumentService.uploadFile(req.file);
         
@@ -240,7 +255,10 @@ const uploadFile = async (req, res) => {
         });
     } catch (error) {
         console.error('❌ Erreur uploadFile:', error);
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ 
+            error: error.message || 'Erreur lors de l\'upload',
+            details: error.stack
+        });
     }
 };
 
