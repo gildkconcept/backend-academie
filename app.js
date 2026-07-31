@@ -40,6 +40,7 @@ const isDev = process.env.NODE_ENV !== 'production';
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:3001',
+  'http://localhost:5173',
   'https://academie-de-la-grace-gold.vercel.app',
     'https://www.academiedelagrace.org',
   process.env.FRONTEND_URL
