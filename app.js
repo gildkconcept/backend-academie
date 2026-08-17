@@ -27,7 +27,6 @@ const badgesRoutes = require('./routes/badgesRoutes');
 const notificationsRoutes = require('./routes/notificationsRoutes');
 const chatRoutes = require('./routes/chatRoutes');
 const attendanceRoutes = require('./routes/attendanceRoutes');
-// ✅ NOUVEAU - Import des routes WhatsApp
 const whatsappRoutes = require('./routes/whatsappRoutes');
 const documentRoutes = require('./routes/documentRoutes');
 
@@ -35,22 +34,28 @@ const app = express();
 
 const isDev = process.env.NODE_ENV !== 'production';
 
+// ==================== 🔧 FIX #1 : TRUST PROXY ====================
+// OBLIGATOIRE car le backend tourne derrière Nginx (CloudPanel) sur le VPS.
+// Sans ça, req.ip renvoie l'IP interne de Nginx pour TOUT LE MONDE,
+// donc express-rate-limit traite tous tes étudiants comme UNE SEULE personne.
+// C'est la cause principale du blocage "réessayez dans 15 minutes" en masse.
+// "1" = on fait confiance au premier proxy devant l'app (Nginx).
+app.set('trust proxy', 1);
+
 // ==================== CORS (DOIT ÊTRE EN PREMIER) ====================
-// ✅ CORRIGÉ - Supporte plusieurs origines dynamiquement
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:3001',
   'http://localhost:5173',
   'https://academie-de-la-grace-gold.vercel.app',
-    'https://www.academiedelagrace.org',
+  'https://www.academiedelagrace.org',
   process.env.FRONTEND_URL
 ].filter(Boolean);
 
 const corsOptions = {
   origin: function(origin, callback) {
-    // Permettre les requêtes sans origine (ex: Postman, apps mobiles)
     if (!origin) return callback(null, true);
-    
+
     if (allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
       callback(null, true);
     } else {
@@ -72,25 +77,50 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
 }));
 
-// ==================== RATE LIMITERS ====================
+// ==================== 🔧 FIX #2 : RATE LIMITERS ADAPTÉS ====================
+// Contexte important : beaucoup d'étudiants se connectent depuis le même
+// Wi-Fi (église) ou le même réseau mobile (CGNAT), donc ils PARTAGENT
+// souvent la même IP publique même une fois trust proxy corrigé.
+// On desserre donc fortement les limites en prod, et on exclut les routes
+// de polling (heartbeat, online-users, notifications) qui sont appelées
+// très fréquemment par des utilisateurs légitimes.
+
+const POLLING_ROUTES = [
+  '/api/verses/today',
+  '/api/health',
+  '/api/live/heartbeat',
+  '/api/live/online-users',
+  '/api/notifications',
+];
+
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: isDev ? 1000 : 100,
+  // 🔧 FIX : 100 était beaucoup trop bas pour une école entière derrière
+  // la même IP. On monte à 2000 (à ajuster selon ta volumétrie réelle).
+  max: isDev ? 5000 : 2000,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Trop de requêtes, réessayez dans 15 minutes.' },
-  skip: (req) => {
-    const skippedRoutes = ['/api/verses/today', '/api/health'];
-    return skippedRoutes.some(route => req.path.startsWith(route));
-  },
+  skip: (req) => POLLING_ROUTES.some(route => req.path.startsWith(route)),
 });
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: isDev ? 100 : 10,
+  // 🔧 FIX : 10 tentatives partagées par toute une école = tout le monde
+  // bloqué en quelques secondes. On monte fortement la limite globale par IP
+  // ET on limite en plus par identifiant (voir rateLimitAuth.js, déjà en place),
+  // qui lui reste la vraie protection anti brute-force par compte.
+  max: isDev ? 200 : 60,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'Trop de tentatives de connexion, réessayez dans 15 minutes.' },
+  message: { error: 'Trop de tentatives de connexion depuis ce réseau, réessayez dans 15 minutes.' },
+  // 🔧 FIX : on limite par IP + username combinés plutôt que par IP seule,
+  // pour ne pas pénaliser tous les étudiants d'un même Wi-Fi quand un seul
+  // se trompe de mot de passe.
+  keyGenerator: (req) => {
+    const username = req.body?.username || 'unknown';
+    return `${req.ip}_${username}`;
+  },
 });
 
 app.use(globalLimiter);
@@ -115,7 +145,7 @@ app.get('/api/health', (req, res) => {
 
 app.use('/api/services', serviceRoutes);
 app.use('/api/attendance', attendanceRoutes);
-app.use('/api/verses', verseRoutes); // /today public, reste protégé dans le router
+app.use('/api/verses', verseRoutes);
 
 // ==================== MIDDLEWARE AUTH GLOBAL ====================
 app.use(authMiddleware);
@@ -136,7 +166,6 @@ app.use('/api/profile', profileRoutes);
 app.use('/api/badges', badgesRoutes);
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api/chat', chatRoutes);
-// ✅ NOUVEAU - Routes WhatsApp
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/documents', documentRoutes);
 

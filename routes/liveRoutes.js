@@ -1,38 +1,90 @@
 // routes/liveRoutes.js
 const express = require('express');
 const router = express.Router();
+const rateLimit = require('express-rate-limit');
 const { authMiddleware } = require('../middleware/auth');
 const supabase = require('../config/supabase');
 
 // Appliquer authMiddleware à toutes les routes
 router.use(authMiddleware);
 
+// ==================== 🔧 FIX : RATE LIMIT PAR UTILISATEUR ====================
+// Le heartbeat frontend est envoyé toutes les 2 minutes (120000ms).
+// On autorise 1 requête / 90 secondes PAR UTILISATEUR (via son ID JWT, pas
+// par IP) : ça laisse une marge confortable pour le cycle normal, tout en
+// bloquant un onglet buggé ou un script qui spammerait l'endpoint.
+// Comme c'est keyé par user.id, ça ne pénalise jamais les autres étudiants
+// du même réseau (contrairement à un rate limit par IP).
+const heartbeatLimiter = rateLimit({
+  windowMs: 90 * 1000,
+  max: 1,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id || req.ip,
+  message: { error: 'Heartbeat trop fréquent, réessayez dans quelques secondes.' },
+});
+
+// ==================== 🔧 FIX : NETTOYAGE PÉRIODIQUE UNIQUE ====================
+// Avant : chaque heartbeat (donc potentiellement 100+ fois en parallèle)
+// déclenchait un SELECT + UPDATE sur toute la table online_users pour
+// nettoyer les inactifs. Ça multipliait la charge Supabase inutilement.
+// Maintenant : un seul job tourne toutes les 60 secondes, quel que soit
+// le nombre d'utilisateurs connectés.
+const INACTIVITY_THRESHOLD_MS = 3 * 60 * 1000; // 3 min (marge sur le cycle de 2 min)
+
+async function cleanupInactiveUsers() {
+  try {
+    const threshold = new Date(Date.now() - INACTIVITY_THRESHOLD_MS).toISOString();
+
+    const { data: inactiveUsers, error: selectError } = await supabase
+      .from('online_users')
+      .select('user_id, user_name')
+      .lt('last_seen', threshold)
+      .eq('is_online', true);
+
+    if (selectError) {
+      console.error('Erreur récupération utilisateurs inactifs:', selectError);
+      return;
+    }
+
+    if (inactiveUsers && inactiveUsers.length > 0) {
+      console.log(`🗑️ Nettoyage périodique: ${inactiveUsers.length} utilisateur(s) marqué(s) hors ligne`);
+      await supabase
+        .from('online_users')
+        .update({ is_online: false })
+        .lt('last_seen', threshold)
+        .eq('is_online', true);
+    }
+  } catch (error) {
+    console.error('Erreur cleanupInactiveUsers:', error);
+  }
+}
+
+// Démarre le job au chargement du module (une seule fois par process).
+setInterval(cleanupInactiveUsers, 60 * 1000);
+
 // POST - Heartbeat (garder la session active)
-router.post('/heartbeat', async (req, res) => {
+router.post('/heartbeat', heartbeatLimiter, async (req, res) => {
   try {
     const userId = req.user.id;
     const userRole = req.user.role;
     const { currentPage, isOnline } = req.body;
-    
-    // Si isOnline est explicitement false, marquer comme hors ligne
+
     const shouldBeOnline = isOnline !== false;
-    
-    console.log(`💓 [Heartbeat] Utilisateur: ${req.user.name}, Rôle: ${userRole}, Online: ${shouldBeOnline}, Page: ${currentPage}`);
-    
+
     let userName = req.user.name;
     let profileImageUrl = null;
     let serviceId = null;
     let level = null;
     let branch = null;
-    
-    // Récupérer les informations complètes de l'utilisateur
+
     if (userRole === 'student') {
       const { data: student } = await supabase
         .from('students')
         .select('full_name, profile_image_url, service_id, level, branch')
         .eq('id', userId)
         .single();
-      
+
       if (student) {
         userName = student.full_name;
         profileImageUrl = student.profile_image_url;
@@ -46,33 +98,28 @@ router.post('/heartbeat', async (req, res) => {
         .select('name, profile_image_url, service_id')
         .eq('id', userId)
         .single();
-      
+
       if (user) {
         userName = user.name;
         profileImageUrl = user.profile_image_url;
         serviceId = user.service_id;
       }
     }
-    
+
     const now = new Date().toISOString();
-    
-    // Vérifier si l'utilisateur existe déjà
+
     const { data: existing } = await supabase
       .from('online_users')
-      .select('id, connected_at, service_id, branch, level')
+      .select('id, connected_at')
       .eq('user_id', userId)
       .maybeSingle();
-    
+
     if (existing) {
-      // Récupérer ou définir connected_at
       let connectedAt = existing.connected_at;
-      
-      // Si l'utilisateur revient en ligne et n'avait pas de connected_at
       if (shouldBeOnline && !connectedAt) {
         connectedAt = now;
       }
-      
-      // Mettre à jour avec toutes les informations
+
       await supabase
         .from('online_users')
         .update({
@@ -80,7 +127,6 @@ router.post('/heartbeat', async (req, res) => {
           current_page: currentPage || null,
           is_online: shouldBeOnline,
           connected_at: shouldBeOnline ? connectedAt : null,
-          // ✅ Mettre à jour ces champs à chaque heartbeat
           user_name: userName,
           profile_image_url: profileImageUrl,
           service_id: serviceId,
@@ -89,7 +135,6 @@ router.post('/heartbeat', async (req, res) => {
         })
         .eq('user_id', userId);
     } else {
-      // Créer une nouvelle entrée
       await supabase
         .from('online_users')
         .insert({
@@ -106,28 +151,9 @@ router.post('/heartbeat', async (req, res) => {
           current_page: currentPage || null
         });
     }
-    
-    // Nettoyer les utilisateurs inactifs (plus de 2 minutes sans heartbeat)
-    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
-    const { data: inactiveUsers, error: inactiveError } = await supabase
-      .from('online_users')
-      .select('user_id, user_name')
-      .lt('last_seen', twoMinutesAgo)
-      .eq('is_online', true);
-    
-    if (inactiveError) {
-      console.error('Erreur récupération utilisateurs inactifs:', inactiveError);
-    } else if (inactiveUsers && inactiveUsers.length > 0) {
-      console.log(`🗑️ Marquage de ${inactiveUsers.length} utilisateur(s) comme hors ligne (inactif depuis plus de 2 minutes):`);
-      inactiveUsers.forEach(u => console.log(`   - ${u.user_name}`));
-      
-      await supabase
-        .from('online_users')
-        .update({ is_online: false })
-        .lt('last_seen', twoMinutesAgo)
-        .eq('is_online', true);
-    }
-    
+
+    // 🔧 FIX : plus de nettoyage ici (voir job périodique ci-dessus)
+
     res.json({ success: true, timestamp: now, connected_at: now });
   } catch (error) {
     console.error('Erreur heartbeat:', error);
@@ -139,27 +165,15 @@ router.post('/heartbeat', async (req, res) => {
 router.get('/online-users', async (req, res) => {
   try {
     const { role, serviceId, level, branch, status = 'all' } = req.query;
-    
-    console.log('🔍 [ONLINE-USERS] Récupération des utilisateurs en ligne');
-    
-    // Nettoyer d'abord les utilisateurs inactifs
-    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
-    const { data: cleanedUsers } = await supabase
-      .from('online_users')
-      .update({ is_online: false })
-      .lt('last_seen', twoMinutesAgo)
-      .eq('is_online', true)
-      .select();
-    
-    if (cleanedUsers && cleanedUsers.length > 0) {
-      console.log(`🗑️ Nettoyage: ${cleanedUsers.length} utilisateur(s) marqué(s) hors ligne`);
-    }
-    
+
+    // 🔧 FIX : plus de nettoyage inline ici non plus, le job périodique
+    // s'en charge déjà toutes les 60s.
+
     let query = supabase
       .from('online_users')
       .select('*')
       .order('last_seen', { ascending: false });
-    
+
     if (status === 'online') {
       query = query.eq('is_online', true);
     } else if (status === 'offline') {
@@ -177,47 +191,32 @@ router.get('/online-users', async (req, res) => {
     if (branch && branch !== 'all') {
       query = query.eq('branch', branch);
     }
-    
+
     const { data: users, error } = await query;
-    
     if (error) throw error;
-    
-    console.log(`📊 [ONLINE-USERS] ${users?.length || 0} utilisateurs trouvés dans la base`);
-    
-    // Enrichir avec les noms des services
-    const enrichedUsers = await Promise.all((users || []).map(async (user) => {
-      let serviceName = null;
-      if (user.service_id) {
-        const { data: service, error: serviceError } = await supabase
-          .from('services')
-          .select('name')
-          .eq('id', user.service_id)
-          .single();
-        
-        if (serviceError) {
-          console.log(`⚠️ Service non trouvé pour ID: ${user.service_id} - Utilisateur: ${user.user_name}`);
-        } else {
-          serviceName = service?.name;
-        }
-      }
-      
-      // Log pour debug
-      console.log(`📊 Utilisateur: ${user.user_name}, rôle: ${user.user_role}, service_id: ${user.service_id}, service_name: ${serviceName}, branch: ${user.branch}, level: ${user.level}`);
-      
-      // ✅ Calculer la durée de connexion (éviter les valeurs négatives)
+
+    const serviceIds = [...new Set((users || []).map(u => u.service_id).filter(Boolean))];
+    let serviceMap = new Map();
+    if (serviceIds.length > 0) {
+      const { data: services } = await supabase
+        .from('services')
+        .select('id, name')
+        .in('id', serviceIds);
+      serviceMap = new Map((services || []).map(s => [s.id, s.name]));
+    }
+
+    const enrichedUsers = (users || []).map((user) => {
+      const serviceName = user.service_id ? serviceMap.get(user.service_id) : null;
+
       let connectedDuration = null;
       if (user.is_online && user.connected_at) {
         const connectedAt = new Date(user.connected_at);
         const now = new Date();
-        let diffMs = now.getTime() - connectedAt.getTime();
-        
-        // Éviter les valeurs négatives
-        if (diffMs < 0) diffMs = 0;
-        
+        let diffMs = Math.max(0, now.getTime() - connectedAt.getTime());
         const diffMinutes = Math.floor(diffMs / 60000);
         const diffHours = Math.floor(diffMinutes / 60);
         const diffDays = Math.floor(diffHours / 24);
-        
+
         if (diffDays > 0) {
           connectedDuration = `${diffDays}j ${diffHours % 24}h`;
         } else if (diffHours > 0) {
@@ -226,17 +225,13 @@ router.get('/online-users', async (req, res) => {
           connectedDuration = `${diffMinutes}min`;
         }
       }
-      
-      // Formater la dernière activité
+
       let lastSeenFormatted = '';
       if (user.last_seen) {
         const lastSeen = new Date(user.last_seen);
         const now = new Date();
-        let diffMinutes = Math.floor((now.getTime() - lastSeen.getTime()) / 60000);
-        
-        // Éviter les valeurs négatives
-        if (diffMinutes < 0) diffMinutes = 0;
-        
+        let diffMinutes = Math.max(0, Math.floor((now.getTime() - lastSeen.getTime()) / 60000));
+
         if (diffMinutes < 1) {
           lastSeenFormatted = 'À l\'instant';
         } else if (diffMinutes < 60) {
@@ -247,21 +242,19 @@ router.get('/online-users', async (req, res) => {
           lastSeenFormatted = lastSeen.toLocaleDateString('fr-FR');
         }
       }
-      
+
       return {
         ...user,
         service_name: serviceName,
         connected_duration: connectedDuration,
         last_seen_formatted: lastSeenFormatted
       };
-    }));
-    
-    // Statistiques
+    });
+
     const onlineUsers = enrichedUsers.filter(u => u.is_online);
     const studentsOnline = onlineUsers.filter(u => u.user_role === 'student').length;
     const managersOnline = onlineUsers.filter(u => u.user_role === 'service_manager').length;
-    
-    // Service le plus actif
+
     const serviceCount = new Map();
     onlineUsers.forEach(u => {
       if (u.service_name) {
@@ -278,10 +271,7 @@ router.get('/online-users', async (req, res) => {
         mostActiveService = service;
       }
     }
-    
-    console.log(`📊 [ONLINE-USERS] ${onlineUsers.length} en ligne, ${studentsOnline} étudiants, ${managersOnline} managers`);
-    console.log(`📊 Service le plus actif: ${mostActiveService || 'aucun'}`);
-    
+
     res.json({
       users: enrichedUsers,
       stats: {
@@ -302,18 +292,18 @@ router.get('/online-users', async (req, res) => {
 router.post('/disconnect/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
-    
+
     if (req.user.role !== 'superadmin') {
       return res.status(403).json({ error: 'Accès refusé' });
     }
-    
+
     console.log(`🔌 Déconnexion manuelle de l'utilisateur: ${userId}`);
-    
+
     await supabase
       .from('online_users')
       .update({ is_online: false })
       .eq('user_id', userId);
-    
+
     res.json({ success: true });
   } catch (error) {
     console.error('Erreur disconnect:', error);
