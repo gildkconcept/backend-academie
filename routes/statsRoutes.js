@@ -1,8 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const supabase = require('../config/supabase');
-
-router.get('/global', async (req, res) => {
+const { cacheMiddleware } = require('../middleware/cache');
+router.get('/global', cacheMiddleware(120), async (req, res) => {
   try {
     // 1. Récupérer tous les étudiants
     const { data: students } = await supabase
@@ -26,9 +26,9 @@ router.get('/global', async (req, res) => {
       const studentIds = serviceStudents.map(s => s.id);
       const serviceAttendances = attendances?.filter(a => studentIds.includes(a.student_id)) || [];
       const presentCount = serviceAttendances.filter(a => a.status === 'present').length;
-      const totalExpected = serviceStudents.length * 1; // Nombre de sessions à calculer
+      const totalExpected = serviceStudents.length * 1;
       const rate = totalExpected > 0 ? Math.round((presentCount / totalExpected) * 100) : 0;
-      
+
       return {
         serviceId: service.id,
         serviceName: service.name,
@@ -57,17 +57,12 @@ router.get('/global', async (req, res) => {
         .select('student_id, status')
         .gte('date', m.start)
         .lte('date', m.end);
-      
+
       const present = monthlyAttendances?.filter(a => a.status === 'present').length || 0;
       const total = monthlyAttendances?.length || 1;
       const rate = Math.round((present / total) * 100);
-      
-      return {
-        month: m.month,
-        rate,
-        present,
-        total
-      };
+
+      return { month: m.month, rate, present, total };
     }));
 
     const sorted = [...attendanceByService].sort((a, b) => b.rate - a.rate);
@@ -77,7 +72,7 @@ router.get('/global', async (req, res) => {
       totalServices: services?.length || 0,
       totalAttendance: attendances?.filter(a => a.status === 'present').length || 0,
       expectedAttendance: attendances?.length || 0,
-      globalAttendanceRate: attendances?.length > 0 
+      globalAttendanceRate: attendances?.length > 0
         ? Math.round((attendances.filter(a => a.status === 'present').length / attendances.length) * 100)
         : 0,
       bestService: sorted[0] || null,

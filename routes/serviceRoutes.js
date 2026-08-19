@@ -1,9 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const { getAllServices } = require('../controllers/serviceController');
+const { cacheMiddleware } = require('../middleware/cache');
 
-// Route PUBLIQUE - accessible sans authentification
-// Utilisée pour l'inscription des étudiants
-router.get('/', getAllServices);
+
+router.get('/', cacheMiddleware(600), getAllServices);
 
 module.exports = router;
