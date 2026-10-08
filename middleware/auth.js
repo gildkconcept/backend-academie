@@ -1,23 +1,34 @@
 const jwt = require('jsonwebtoken');
 
+// ============================================================================
+// ROUTES RÉELLEMENT PUBLIQUES : méthode HTTP + chemin EXACT.
+// Avant : on utilisait startsWith() sur une liste de préfixes, ce qui rendait
+// publique TOUTE l'arborescence /api/attendance/... (et marquait ces routes
+// comme "publiques" pour roleMiddleware, qui laissait alors tout passer).
+// Maintenant : seules ces routes précises sont accessibles sans connexion.
+// ============================================================================
+const PUBLIC_ROUTES = new Set([
+  'POST /api/auth/login',
+  'POST /api/auth/register',
+  'GET /api/auth/check-username',
+  'POST /api/auth/verify-recovery',
+  'POST /api/auth/reset-account',
+  'GET /api/health',
+  'HEAD /api/health',
+  'GET /api/services',
+  'GET /api/verses/today',
+]);
+
+function getCleanPath(req) {
+  // On enlève la query string (?a=b) et le "/" final éventuel
+  const path = (req.originalUrl || '').split('?')[0];
+  return path.length > 1 ? path.replace(/\/+$/, '') : path;
+}
+
 const authMiddleware = (req, res, next) => {
-  const publicRoutes = [
-    '/api/auth/login',
-    '/api/auth/register',
-    '/api/auth/check-username',
-    '/api/auth/verify-recovery',
-    '/api/auth/reset-account',
-    '/api/health',
-    '/api/services',
-    '/api/verses/today',
-    '/api/attendance'
-  ];
+  const isPublicRoute = PUBLIC_ROUTES.has(`${req.method} ${getCleanPath(req)}`);
 
-  const isPublicRoute = publicRoutes.some(route => 
-    req.originalUrl === route || req.originalUrl.startsWith(route)
-  );
-
-  // ✅ Marquer la route comme publique pour roleMiddleware
+  // Conservé pour compatibilité (plus utilisé par roleMiddleware)
   req.isPublicRoute = isPublicRoute;
 
   if (isPublicRoute) {
@@ -31,7 +42,8 @@ const authMiddleware = (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    // On impose l'algorithme HS256 (celui utilisé par jwt.sign par défaut)
+    const decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
     req.user = decoded;
     next();
   } catch (error) {
@@ -41,9 +53,8 @@ const authMiddleware = (req, res, next) => {
 
 const roleMiddleware = (...roles) => {
   return (req, res, next) => {
-    // ✅ Laisser passer les routes publiques sans bloquer
-    if (req.isPublicRoute) return next();
-
+    // Plus aucun contournement : sans utilisateur authentifié => 401,
+    // avec un mauvais rôle => 403. (Avant, une route "publique" passait.)
     if (!req.user) {
       return res.status(401).json({ error: 'Non autorisé' });
     }

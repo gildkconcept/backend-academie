@@ -9,85 +9,111 @@ const supabase = require('../config/supabase');
 
 /**
  * GET - Récupérer les groupes de l'utilisateur
+ * 🔧 FIX N+1 : avant, cette fonction (+ ChatGroup.findByUserId en amont)
+ * faisait jusqu'à ~70 requêtes Supabase pour un utilisateur dans 10
+ * groupes (3-4 requêtes PAR groupe, en double avec le modèle).
+ * Maintenant : un nombre FIXE de requêtes (~5), quel que soit le nombre
+ * de groupes. Tout le calcul par groupe (dernier message, non-lus) se
+ * fait en mémoire JS à partir de données chargées en une fois.
  */
 const getGroups = async (req, res) => {
   try {
     const userId = req.user.id;
     const userRole = req.user.role;
     let userData = null;
-    
+
     if (userRole === 'student') {
       userData = await Student.findById(userId);
     }
-    
+
     const groups = await ChatGroup.findByUserId(userId, userRole, userData);
-    
-    // Enrichir les groupes avec les infos manquantes
-    const enrichedGroups = await Promise.all((groups || []).map(async (group) => {
-      // 1. Compter les membres
-      const { count: memberCount } = await supabase
-        .from('chat_group_members')
-        .select('*', { count: 'exact', head: true })
-        .eq('group_id', group.id);
-      
-      // 2. Traiter le dernier message
+
+    if (!groups || groups.length === 0) {
+      return res.json({ groups: [] });
+    }
+
+    const groupIds = groups.map(g => g.id);
+
+    // 1 requête : tous les messages non supprimés des groupes concernés,
+    // du plus récent au plus ancien (on ne garde que le premier par
+    // groupe pour le "dernier message").
+    const { data: allMessages } = await supabase
+      .from('chat_messages')
+      .select('id, group_id, content, sender_id, sender_name, sender_type, created_at')
+      .in('group_id', groupIds)
+      .eq('is_deleted', false)
+      .order('created_at', { ascending: false });
+
+    // 1 requête : tous les messages déjà lus par cet utilisateur (tous
+    // groupes confondus), pour calculer les compteurs de non-lus en mémoire.
+    const { data: readMessages } = await supabase
+      .from('chat_message_reads')
+      .select('message_id')
+      .eq('reader_id', userId);
+    const readMessageIds = new Set((readMessages || []).map(r => r.message_id));
+
+    // Calcul en mémoire : dernier message par groupe + comptage des non-lus
+    const lastMessageByGroup = new Map();
+    const unreadCountByGroup = new Map();
+    const studentSenderIds = new Set();
+    const otherSenderIds = new Set();
+
+    (allMessages || []).forEach(msg => {
+      if (!lastMessageByGroup.has(msg.group_id)) {
+        lastMessageByGroup.set(msg.group_id, msg);
+        if (msg.sender_type === 'student') studentSenderIds.add(msg.sender_id);
+        else otherSenderIds.add(msg.sender_id);
+      }
+      if (!readMessageIds.has(msg.id) && msg.sender_id !== userId) {
+        unreadCountByGroup.set(msg.group_id, (unreadCountByGroup.get(msg.group_id) || 0) + 1);
+      }
+    });
+
+    // Au maximum 2 requêtes (une pour les avatars étudiants, une pour les
+    // avatars staff), au lieu d'une requête par dernier message.
+    const avatarMap = new Map();
+    if (studentSenderIds.size > 0) {
+      const { data: studentAvatars } = await supabase
+        .from('students')
+        .select('id, profile_image_url')
+        .in('id', Array.from(studentSenderIds));
+      (studentAvatars || []).forEach(s => avatarMap.set(s.id, s.profile_image_url));
+    }
+    if (otherSenderIds.size > 0) {
+      const { data: userAvatars } = await supabase
+        .from('users')
+        .select('id, profile_image_url')
+        .in('id', Array.from(otherSenderIds));
+      (userAvatars || []).forEach(u => avatarMap.set(u.id, u.profile_image_url));
+    }
+
+    // Assemblage final : aucune requête Supabase supplémentaire ici.
+    const enrichedGroups = groups.map(group => {
+      const memberCount = group.members?.[0]?.count || 0;
+      const msg = lastMessageByGroup.get(group.id);
+
       let lastMessage = null;
-      if (group.lastMessage) {
-        // Formater la date
-        const messageDate = new Date(group.lastMessage.created_at);
+      if (msg) {
+        const messageDate = new Date(msg.created_at);
         const now = new Date();
         const diff = now.getTime() - messageDate.getTime();
-        
+
         let timeFormatted;
         if (diff < 60000) timeFormatted = 'À l\'instant';
         else if (diff < 3600000) timeFormatted = `Il y a ${Math.floor(diff / 60000)} min`;
         else if (diff < 86400000) timeFormatted = messageDate.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
         else timeFormatted = messageDate.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
-        
-        // Récupérer l'avatar de l'expéditeur
-        const table = group.lastMessage.sender_type === 'student' ? 'students' : 'users';
-        const { data: userAvatar } = await supabase
-          .from(table)
-          .select('profile_image_url')
-          .eq('id', group.lastMessage.sender_id)
-          .maybeSingle();
-        
+
         lastMessage = {
-          content: group.lastMessage.content,
-          senderName: group.lastMessage.sender_name,
-          senderId: group.lastMessage.sender_id,
-          senderType: group.lastMessage.sender_type,
-          senderAvatar: userAvatar?.profile_image_url || null,
+          content: msg.content,
+          senderName: msg.sender_name,
+          senderId: msg.sender_id,
+          senderType: msg.sender_type,
+          senderAvatar: avatarMap.get(msg.sender_id) || null,
           time: timeFormatted
         };
       }
-      
-      // 3. Compter les messages non lus
-      let unreadCount = 0;
-      const { data: readMessages } = await supabase
-        .from('chat_message_reads')
-        .select('message_id')
-        .eq('reader_id', userId);
-      
-      const readMessageIds = new Set(readMessages?.map(r => r.message_id) || []);
-      
-      if (readMessageIds.size > 0) {
-        const { count } = await supabase
-          .from('chat_messages')
-          .select('*', { count: 'exact', head: true })
-          .eq('group_id', group.id)
-          .eq('is_deleted', false)
-          .not('id', 'in', `(${Array.from(readMessageIds).join(',')})`);
-        unreadCount = count || 0;
-      } else {
-        const { count } = await supabase
-          .from('chat_messages')
-          .select('*', { count: 'exact', head: true })
-          .eq('group_id', group.id)
-          .eq('is_deleted', false);
-        unreadCount = count || 0;
-      }
-      
+
       return {
         id: group.id,
         name: group.name,
@@ -95,13 +121,13 @@ const getGroups = async (req, res) => {
         branch: group.branch,
         level: group.level,
         service_id: group.service_id,
-        memberCount: memberCount || 0,
+        memberCount,
         lastMessage,
-        unreadCount
+        unreadCount: unreadCountByGroup.get(group.id) || 0
       };
-    }));
-    
-    res.json({ groups: enrichedGroups || [] });
+    });
+
+    res.json({ groups: enrichedGroups });
   } catch (error) {
     console.error('Erreur getGroups:', error);
     res.status(500).json({ error: error.message });
@@ -114,12 +140,11 @@ const getGroups = async (req, res) => {
 const createGroup = async (req, res) => {
   try {
     const { name, type, branch, level, service_id, memberIds = [] } = req.body;
-    
+
     if (!name || !type) {
       return res.status(400).json({ error: 'name et type requis' });
     }
-    
-    // Créer le groupe
+
     const group = await ChatGroup.create({
       name,
       type,
@@ -128,17 +153,16 @@ const createGroup = async (req, res) => {
       service_id,
       created_by: req.user.id
     });
-    
-    // Ajouter les membres
+
     const members = [...memberIds];
     if (!members.includes(req.user.id)) {
       members.push(req.user.id);
     }
-    
+
     if (members.length > 0) {
       await ChatGroup.addMembers(group.id, members);
     }
-    
+
     res.status(201).json({ success: true, group });
   } catch (error) {
     console.error('Erreur createGroup:', error);
@@ -153,13 +177,12 @@ const getGroupMembers = async (req, res) => {
   try {
     const { groupId } = req.params;
     const userId = req.user.id;
-    
-    // Vérifier que l'utilisateur est membre
+
     const isMember = await ChatGroup.isMember(groupId, userId);
     if (!isMember && req.user.role !== 'superadmin') {
       return res.status(403).json({ error: 'Accès non autorisé' });
     }
-    
+
     const members = await ChatGroup.getMembers(groupId);
     res.json({ members: members || [] });
   } catch (error) {
@@ -175,11 +198,11 @@ const addMembers = async (req, res) => {
   try {
     const { groupId } = req.params;
     const { memberIds } = req.body;
-    
+
     if (!memberIds || !memberIds.length) {
       return res.status(400).json({ error: 'memberIds requis' });
     }
-    
+
     await ChatGroup.addMembers(groupId, memberIds);
     res.json({ success: true, message: `${memberIds.length} membre(s) ajouté(s)` });
   } catch (error) {
@@ -195,7 +218,7 @@ const leaveGroup = async (req, res) => {
   try {
     const { groupId } = req.params;
     const userId = req.user.id;
-    
+
     await ChatGroup.removeMember(groupId, userId);
     res.json({ success: true, message: 'Vous avez quitté le groupe' });
   } catch (error) {
@@ -208,25 +231,23 @@ const leaveGroup = async (req, res) => {
 
 /**
  * GET - Récupérer les messages d'un groupe
- * ✅ CORRIGÉ - Autorise le superadmin même s'il n'est pas membre
  */
 const getMessages = async (req, res) => {
   try {
     const { groupId, limit = 50, before } = req.query;
     const userId = req.user.id;
     const userRole = req.user.role;
-    
+
     if (!groupId) {
       return res.status(400).json({ error: 'groupId requis' });
     }
-    
-    // Vérifier que l'utilisateur est membre (sauf pour superadmin)
+
     const isMember = await ChatGroup.isMember(groupId, userId);
-    
+
     if (!isMember && userRole !== 'superadmin') {
       return res.status(403).json({ error: 'Accès non autorisé' });
     }
-    
+
     const messages = await ChatMessage.findByGroupId(groupId, parseInt(limit), before);
     res.json({ messages: messages || [] });
   } catch (error) {
@@ -237,7 +258,6 @@ const getMessages = async (req, res) => {
 
 /**
  * POST - Envoyer un message
- * ✅ CORRIGÉ - Autorise le superadmin et l'ajoute au groupe si nécessaire
  */
 const sendMessage = async (req, res) => {
   try {
@@ -245,24 +265,22 @@ const sendMessage = async (req, res) => {
     const userId = req.user.id;
     const userName = req.user.name;
     const userRole = req.user.role;
-    
+
     if (!groupId || !content) {
       return res.status(400).json({ error: 'groupId et content requis' });
     }
-    
-    // Vérifier que l'utilisateur est membre (sauf pour superadmin)
+
     const isMember = await ChatGroup.isMember(groupId, userId);
-    
+
     if (!isMember && userRole !== 'superadmin') {
       return res.status(403).json({ error: 'Accès non autorisé' });
     }
-    
-    // Si superadmin et pas membre, l'ajouter automatiquement au groupe
+
     if (!isMember && userRole === 'superadmin') {
       await ChatGroup.addMember(groupId, userId);
       console.log(`✅ Superadmin ${userName} ajouté au groupe ${groupId}`);
     }
-    
+
     const message = await ChatMessage.create({
       group_id: groupId,
       sender_id: userId,
@@ -272,7 +290,7 @@ const sendMessage = async (req, res) => {
       type,
       reply_to: replyTo || null
     });
-    
+
     res.status(201).json({ success: true, message });
   } catch (error) {
     console.error('Erreur sendMessage:', error);
@@ -287,20 +305,20 @@ const editMessage = async (req, res) => {
   try {
     const { messageId, content } = req.body;
     const userId = req.user.id;
-    
+
     if (!messageId || !content) {
       return res.status(400).json({ error: 'messageId et content requis' });
     }
-    
+
     const message = await ChatMessage.findById(messageId);
     if (!message) {
       return res.status(404).json({ error: 'Message non trouvé' });
     }
-    
+
     if (message.sender_id !== userId) {
       return res.status(403).json({ error: 'Vous ne pouvez modifier que vos propres messages' });
     }
-    
+
     await ChatMessage.update(messageId, { content });
     res.json({ success: true });
   } catch (error) {
@@ -317,20 +335,20 @@ const deleteMessage = async (req, res) => {
     const { messageId } = req.query;
     const userId = req.user.id;
     const userRole = req.user.role;
-    
+
     if (!messageId) {
       return res.status(400).json({ error: 'messageId requis' });
     }
-    
+
     const message = await ChatMessage.findById(messageId);
     if (!message) {
       return res.status(404).json({ error: 'Message non trouvé' });
     }
-    
+
     if (message.sender_id !== userId && userRole !== 'superadmin') {
       return res.status(403).json({ error: 'Non autorisé' });
     }
-    
+
     await ChatMessage.softDelete(messageId);
     res.json({ success: true });
   } catch (error) {
@@ -343,60 +361,55 @@ const deleteMessage = async (req, res) => {
 
 /**
  * POST - Marquer les messages d'un groupe comme lus
- * ✅ CORRIGÉ - Autorise le superadmin même s'il n'est pas membre
  */
 const markAsRead = async (req, res) => {
   try {
     const { groupId } = req.body;
     const userId = req.user.id;
     const userRole = req.user.role;
-    
+
     if (!groupId) {
       return res.status(400).json({ error: 'groupId requis' });
     }
-    
-    // Vérifier que l'utilisateur a accès au groupe (sauf pour superadmin)
+
     const isMember = await ChatGroup.isMember(groupId, userId);
-    
+
     if (!isMember && userRole !== 'superadmin') {
       return res.status(403).json({ error: 'Accès non autorisé' });
     }
-    
-    // Récupérer tous les messages du groupe
+
     const { data: messages, error: messagesError } = await supabase
       .from('chat_messages')
       .select('id')
       .eq('group_id', groupId);
-    
+
     if (messagesError) throw messagesError;
-    
+
     if (messages && messages.length > 0) {
       const messageIds = messages.map(msg => msg.id);
-      
-      // 1. Supprimer les anciennes entrées de lecture pour ces messages
+
       const { error: deleteError } = await supabase
         .from('chat_message_reads')
         .delete()
         .in('message_id', messageIds)
         .eq('reader_id', userId);
-      
+
       if (deleteError) throw deleteError;
-      
-      // 2. Insérer les nouvelles entrées de lecture
+
       const reads = messages.map(msg => ({
         message_id: msg.id,
         reader_id: userId,
         reader_type: userRole === 'student' ? 'student' : userRole,
         read_at: new Date().toISOString()
       }));
-      
+
       const { error: insertError } = await supabase
         .from('chat_message_reads')
         .insert(reads);
-      
+
       if (insertError) throw insertError;
     }
-    
+
     res.json({ success: true });
   } catch (error) {
     console.error('Erreur markAsRead:', error);

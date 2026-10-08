@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const supabase = require('../config/supabase');
 const { authMiddleware, roleMiddleware } = require('../middleware/auth');
+const { sanitizeStudent } = require('../utils/sanitize');
 
 // ==================== ROUTES PUBLIQUES (si nécessaire) ====================
 
@@ -57,7 +58,7 @@ router.get('/history', async (req, res) => {
 });
 
 // GET - Présences par date (pour superadmin)
-router.get('/by-date', async (req, res) => {
+router.get('/by-date', roleMiddleware('superadmin'), async (req, res) => {
   try {
     const { date, serviceId } = req.query;
     
@@ -77,7 +78,7 @@ router.get('/by-date', async (req, res) => {
     const { data, error } = await query;
     if (error) throw error;
     
-    res.json(data || []);
+    res.json((data || []).map(a => ({ ...a, students: sanitizeStudent(a.students) })));
   } catch (error) {
     console.error('Erreur getAttendanceByDate:', error);
     res.status(500).json({ error: error.message });
@@ -87,7 +88,7 @@ router.get('/by-date', async (req, res) => {
 // ==================== ROUTES POUR LA PRÉSENCE ASSISTÉE ====================
 
 // GET - Récupérer les étudiants sans téléphone pour une session donnée
-router.get('/assisted', async (req, res) => {
+router.get('/assisted', roleMiddleware('superadmin'), async (req, res) => {
   try {
     const { sessionId } = req.query;
     
@@ -173,7 +174,7 @@ router.get('/assisted', async (req, res) => {
 });
 
 // POST - Enregistrer les présences assistées
-router.post('/assisted', async (req, res) => {
+router.post('/assisted', roleMiddleware('superadmin'), async (req, res) => {
   try {
     const { sessionId, attendances } = req.body;
     
@@ -227,7 +228,7 @@ router.post('/assisted', async (req, res) => {
 // ==================== NOUVELLES ROUTES POUR L'HISTORIQUE DES CODES ====================
 
 // GET - Statistiques d'une session
-router.get('/session/:sessionId/stats', async (req, res) => {
+router.get('/session/:sessionId/stats', roleMiddleware('superadmin'), async (req, res) => {
   try {
     const { sessionId } = req.params;
     
@@ -257,7 +258,7 @@ router.get('/session/:sessionId/stats', async (req, res) => {
 });
 
 // GET - Étudiants d'une session
-router.get('/session/:sessionId/students', async (req, res) => {
+router.get('/session/:sessionId/students', roleMiddleware('superadmin'), async (req, res) => {
   try {
     const { sessionId } = req.params;
     

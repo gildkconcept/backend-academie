@@ -1,9 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const supabase = require('../config/supabase');
+const { roleMiddleware } = require('../middleware/auth');
 
 // Rapport mensuel
-router.get('/monthly', async (req, res) => {
+router.get('/monthly', roleMiddleware('superadmin'), async (req, res) => {
   try {
     const { month, year, serviceId, level, branch } = req.query;
     

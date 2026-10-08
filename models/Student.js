@@ -1,4 +1,5 @@
 const supabase = require('../config/supabase');
+const { sanitizeStudent, sanitizeStudents } = require('../utils/sanitize');
 
 class Student {
   static async findAll(filters = {}) {
@@ -20,7 +21,7 @@ class Student {
     
     const { data, error } = await query;
     if (error) throw error;
-    return data;
+    return sanitizeStudents(data);
   }
 
   static async findByUsername(username) {
@@ -44,7 +45,7 @@ class Student {
       .single();
     
     if (error) throw error;
-    return data;
+    return sanitizeStudent(data);
   }
 
   static async create(studentData) {
@@ -80,7 +81,7 @@ class Student {
       .single();
     
     if (error) throw error;
-    return data;
+    return sanitizeStudent(data);
   }
 
   static async update(id, updateData) {
@@ -92,7 +93,7 @@ class Student {
       .single();
     
     if (error) throw error;
-    return data;
+    return sanitizeStudent(data);
   }
 
   static async softDelete(id) {

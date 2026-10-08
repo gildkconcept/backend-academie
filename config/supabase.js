@@ -5,7 +5,7 @@ const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY; 
 
 console.log('🔌 SUPABASE_URL:', supabaseUrl);
-console.log('🔑 SERVICE_ROLE_KEY (début):', supabaseKey?.substring(0, 20) + '...');
+console.log('🔑 SERVICE_ROLE_KEY:', supabaseKey ? 'définie ✅' : 'manquante ❌');
 
 if (!supabaseUrl || !supabaseKey) {
   console.error('❌ Erreur: Variables d\'environnement manquantes!');
@@ -15,7 +15,7 @@ if (!supabaseUrl || !supabaseKey) {
 
 const supabase = createClient(supabaseUrl, supabaseKey, {
   auth: {
-    persistSession: false,// ← ajouté pour backend
+    persistSession: false,
   },
 });
 

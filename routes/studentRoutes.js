@@ -13,6 +13,7 @@ const {
 const { authMiddleware, roleMiddleware } = require('../middleware/auth');
 const supabase = require('../config/supabase');
 const bcrypt = require('bcryptjs');
+const { sanitizeStudent, sanitizeStudents } = require('../utils/sanitize');
 
 // Routes protégées
 router.use(authMiddleware);
@@ -20,7 +21,7 @@ router.use(authMiddleware);
 // ==================== ROUTES SPÉCIFIQUES (AVANT /:id) ====================
 
 // GET - Liste des étudiants (avec filtres)
-router.get('/', getAllStudents);
+router.get('/', roleMiddleware('superadmin', 'service_manager'), getAllStudents);
 
 // GET - Branches uniques (pour les filtres)
 router.get('/branches', async (req, res) => {
@@ -40,9 +41,11 @@ router.get('/branches', async (req, res) => {
 });
 
 // GET - Étudiants avec statistiques (pour les graphiques)
-router.get('/with-stats', async (req, res) => {
+router.get('/with-stats', roleMiddleware('superadmin', 'service_manager'), async (req, res) => {
   try {
-    const { serviceId, level, branch } = req.query;
+    const { level, branch } = req.query;
+    // Un responsable de service ne voit que SON service
+    const serviceId = req.user.role === 'service_manager' ? req.user.serviceId : req.query.serviceId;
     
     let query = supabase
       .from('students')
@@ -62,7 +65,7 @@ router.get('/with-stats', async (req, res) => {
     const { data: students, error } = await query;
     if (error) throw error;
     
-    res.json(students || []);
+    res.json(sanitizeStudents(students || []));
   } catch (error) {
     console.error('Erreur getStudentsWithStats:', error);
     res.status(500).json({ error: error.message });
@@ -79,7 +82,7 @@ router.get('/deleted', roleMiddleware('superadmin'), async (req, res) => {
       .order('deleted_at', { ascending: false });
     
     if (error) throw error;
-    res.json(data || []);
+    res.json(sanitizeStudents(data || []));
   } catch (error) {
     console.error('Erreur récupération étudiants supprimés:', error);
     res.status(500).json({ error: error.message });
@@ -172,7 +175,12 @@ router.get('/by-level', roleMiddleware('superadmin'), async (req, res) => {
 // ==================== ROUTES AVEC PARAMÈTRE ID (APRÈS) ====================
 
 // GET - Étudiant par ID (doit être APRÈS toutes les routes spécifiques)
-router.get('/:id', getStudentById);
+router.get('/:id', (req, res, next) => {
+  if (req.user.role === 'student' && req.user.id !== req.params.id) {
+    return res.status(403).json({ error: 'Accès refusé' });
+  }
+  next();
+}, getStudentById);
 
 // GET - Historique des changements de niveau
 router.get('/:id/level-history', roleMiddleware('superadmin'), getLevelHistory);
@@ -249,7 +257,7 @@ router.post('/create-no-phone', roleMiddleware('superadmin'), async (req, res) =
     res.status(201).json({
       success: true,
       message: 'Étudiant sans téléphone créé avec succès',
-      student: data,
+      student: sanitizeStudent(data),
       defaultPassword
     });
   } catch (error) {
