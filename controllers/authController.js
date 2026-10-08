@@ -197,51 +197,79 @@ const register = async (req, res) => {
 
 // ==================== FONCTIONS POUR LA RÉCUPÉRATION DE COMPTE ====================
 
+// Normalise un nom : minuscules, sans accents, espaces simplifiés
+const normalizeName = (value) =>
+  String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+
+// Le nom saisi correspond-il au nom enregistré ?
+// - identique (sans tenir compte des accents/majuscules), OU
+// - au moins 2 mots saisis, tous présents dans le nom enregistré
+//   (Avant : n'importe quelle lettre suffisait, ex. "a" trouvait un compte.)
+const nameMatches = (typedName, storedName) => {
+  const typed = normalizeName(typedName);
+  const stored = normalizeName(storedName);
+  if (!typed || !stored) return false;
+  if (typed === stored) return true;
+  const typedWords = typed.split(' ');
+  const storedWords = stored.split(' ');
+  return typedWords.length >= 2 && typedWords.every((w) => storedWords.includes(w));
+};
+
 const verifyRecovery = async (req, res) => {
   try {
-    const { phone, fullName, branch, serviceId } = req.body;
+    const { phone, fullName, branch, serviceId } = req.body || {};
     const supabase = require('../config/supabase');
     const crypto = require('crypto');
 
-    console.log('🔐 Vérification récupération:', { phone, fullName, branch, serviceId });
+    // --- Validation des entrées (évite les plantages et les injections) ---
+    if (
+      typeof phone !== 'string' || typeof fullName !== 'string' ||
+      typeof branch !== 'string' || typeof serviceId !== 'string' ||
+      !phone.trim() || !fullName.trim() || !branch.trim() || !serviceId.trim()
+    ) {
+      return res.status(400).json({ error: 'Tous les champs sont requis' });
+    }
 
-    const cleanPhone = phone.replace(/^0+/, '');
+    const cleanInput = phone.trim();
+    if (!/^[0-9+\s().-]{6,20}$/.test(cleanInput)) {
+      return res.status(400).json({ error: 'Numéro de téléphone invalide' });
+    }
 
-    let query = supabase
+    console.log('🔐 Vérification récupération demandée');
+
+    const cleanPhone = cleanInput.replace(/^0+/, '');
+
+    // .in() échappe correctement les valeurs (contrairement à .or() avec
+    // du texte concaténé, qui permettait d'injecter des filtres).
+    const { data: students, error } = await supabase
       .from('students')
       .select('id, username, full_name, phone, branch, service_id')
       .eq('branch', branch)
       .eq('service_id', serviceId)
-      .is('deleted_at', null);
-
-    query = query.or(`phone.eq.${phone},phone.eq.${cleanPhone}`);
-
-    const { data: students, error } = await query;
+      .is('deleted_at', null)
+      .in('phone', [cleanInput, cleanPhone]);
 
     if (error) {
       console.error('Erreur recherche:', error);
       return res.status(500).json({ error: 'Erreur lors de la recherche' });
     }
 
-    const student = students?.find(s =>
-      s.full_name?.toLowerCase() === fullName.toLowerCase() ||
-      s.full_name?.toLowerCase().includes(fullName.toLowerCase())
-    );
+    const student = students?.find((s) => nameMatches(fullName, s.full_name));
 
     if (!student) {
-      console.log('❌ Aucun étudiant trouvé');
+      console.log('❌ Aucun étudiant trouvé pour la récupération');
       return res.status(404).json({ error: 'Aucun compte trouvé avec ces informations' });
     }
-
-    console.log('✅ Étudiant trouvé:', student.username);
 
     const expiresAt = new Date();
     expiresAt.setMinutes(expiresAt.getMinutes() + 15);
 
     const recoveryToken = crypto.randomBytes(32).toString('hex');
-
-    console.log('📅 Token généré à:', new Date().toISOString());
-    console.log('📅 Token expire à:', expiresAt.toISOString());
 
     const { error: updateError } = await supabase
       .from('students')
@@ -258,6 +286,7 @@ const verifyRecovery = async (req, res) => {
 
     console.log('✅ Token de récupération généré pour:', student.username);
 
+    // Même format de réponse qu'avant : le frontend n'a pas besoin de changer
     res.json({
       success: true,
       recoveryToken: recoveryToken,
@@ -267,17 +296,28 @@ const verifyRecovery = async (req, res) => {
     });
   } catch (error) {
     console.error('Erreur verifyRecovery:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur serveur' });
   }
 };
 
 const resetAccount = async (req, res) => {
   try {
-    const { recoveryToken, newUsername, newPassword } = req.body;
+    const { recoveryToken, newUsername, newPassword } = req.body || {};
     const bcrypt = require('bcryptjs');
     const supabase = require('../config/supabase');
 
-    console.log('🔐 Réinitialisation de compte avec token:', recoveryToken.substring(0, 20) + '...');
+    // --- Validation des entrées (mêmes minimums que le formulaire) ---
+    if (typeof recoveryToken !== 'string' || !/^[a-f0-9]{64}$/i.test(recoveryToken)) {
+      return res.status(400).json({ error: 'Token invalide' });
+    }
+    if (typeof newUsername !== 'string' || newUsername.trim().length < 3 || newUsername.length > 50) {
+      return res.status(400).json({ error: 'Nom d\'utilisateur invalide (3 caractères minimum)' });
+    }
+    if (typeof newPassword !== 'string' || newPassword.length < 6 || newPassword.length > 100) {
+      return res.status(400).json({ error: 'Mot de passe trop court (6 caractères minimum)' });
+    }
+
+    console.log('🔐 Réinitialisation de compte demandée');
 
     const { data: student, error } = await supabase
       .from('students')
@@ -291,20 +331,15 @@ const resetAccount = async (req, res) => {
       return res.status(400).json({ error: 'Token invalide' });
     }
 
-    console.log('📅 Date expiration stockée:', student.recovery_token_expires_at);
-    console.log('📅 Date actuelle:', new Date().toISOString());
-
-    // ⚠️ TEMPORAIRE : Vérification d'expiration commentée pour tester
-    /*
-    const expiresAt = new Date(student.recovery_token_expires_at);
-    const now = new Date();
-    const marginExpiresAt = new Date(expiresAt.getTime() + 2 * 60 * 1000);
-
-    if (now > marginExpiresAt) {
+    // ✅ Vérification d'expiration réactivée (elle était désactivée
+    // "temporairement"). Marge de 2 minutes, comme dans l'ancien code commenté.
+    const expiresAt = student.recovery_token_expires_at
+      ? new Date(student.recovery_token_expires_at)
+      : null;
+    if (!expiresAt || Date.now() > expiresAt.getTime() + 2 * 60 * 1000) {
       console.log('❌ Token expiré');
       return res.status(400).json({ error: 'Token expiré. Veuillez recommencer la procédure.' });
     }
-    */
 
     const { data: existingUser } = await supabase
       .from('students')
@@ -314,7 +349,7 @@ const resetAccount = async (req, res) => {
       .maybeSingle();
 
     if (existingUser) {
-      console.log('❌ Username déjà pris:', newUsername);
+      console.log('❌ Username déjà pris');
       const suggestions = [];
       for (let i = 1; i <= 3; i++) {
         const candidate = `${newUsername}${i}`;
@@ -358,7 +393,7 @@ const resetAccount = async (req, res) => {
     });
   } catch (error) {
     console.error('Erreur resetAccount:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur serveur' });
   }
 };
 

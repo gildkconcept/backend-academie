@@ -2,7 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const rateLimit = require('express-rate-limit');
-const { authMiddleware } = require('../middleware/auth');
+const { authMiddleware, roleMiddleware } = require('../middleware/auth');
 const supabase = require('../config/supabase');
 
 // Appliquer authMiddleware à toutes les routes
@@ -162,7 +162,7 @@ router.post('/heartbeat', heartbeatLimiter, async (req, res) => {
 });
 
 // GET - Récupérer les utilisateurs en ligne
-router.get('/online-users', async (req, res) => {
+router.get('/online-users', roleMiddleware('superadmin'), async (req, res) => {
   try {
     const { role, serviceId, level, branch, status = 'all' } = req.query;
 
