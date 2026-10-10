@@ -29,6 +29,8 @@ const chatRoutes = require('./routes/chatRoutes');
 const attendanceRoutes = require('./routes/attendanceRoutes');
 const whatsappRoutes = require('./routes/whatsappRoutes');
 const documentRoutes = require('./routes/documentRoutes');
+const cardRoutes = require('./routes/cardRoutes');
+const cardVerifyRoutes = require('./routes/cardVerifyRoutes');
 
 const app = express();
 
@@ -146,6 +148,7 @@ app.get('/api/health', (req, res) => {
 app.use('/api/services', serviceRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/verses', verseRoutes);
+app.use('/api/cards/verify', cardVerifyRoutes); // vérification publique d'une carte (QR code)
 
 // ==================== MIDDLEWARE AUTH GLOBAL ====================
 app.use(authMiddleware);
@@ -168,6 +171,7 @@ app.use('/api/notifications', notificationsRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/documents', documentRoutes);
+app.use('/api/cards', cardRoutes);
 
 // ==================== 404 ====================
 app.use((req, res, next) => {
