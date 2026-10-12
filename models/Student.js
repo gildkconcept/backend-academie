@@ -81,6 +81,10 @@ class Student {
       .single();
     
     if (error) throw error;
+
+    // Carte étudiant : création automatique, en arrière-plan (n'empêche jamais la création du compte)
+    require('../services/cardService').ensureCardInBackground(data.id);
+
     return sanitizeStudent(data);
   }
 

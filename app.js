@@ -31,6 +31,7 @@ const whatsappRoutes = require('./routes/whatsappRoutes');
 const documentRoutes = require('./routes/documentRoutes');
 const cardRoutes = require('./routes/cardRoutes');
 const cardVerifyRoutes = require('./routes/cardVerifyRoutes');
+const cardScanRoutes = require('./routes/cardScanRoutes');
 
 const app = express();
 
@@ -172,6 +173,7 @@ app.use('/api/chat', chatRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/documents', documentRoutes);
 app.use('/api/cards', cardRoutes);
+app.use('/api/card-scan', cardScanRoutes);
 
 // ==================== 404 ====================
 app.use((req, res, next) => {

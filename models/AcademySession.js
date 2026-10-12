@@ -72,7 +72,15 @@ class AcademySession {
       .from('attendance')
       .insert(records);
     
-    if (error) throw error;
+    if (!error) return;
+
+    // Doublon (par exemple une carte scannée au même instant) : on reprend élève par élève
+    // en ignorant seulement les doublons, pour ne jamais perdre tout le marquage.
+    if (error.code !== '23505') throw error;
+    for (const record of records) {
+      const { error: oneError } = await supabase.from('attendance').insert(record);
+      if (oneError && oneError.code !== '23505') throw oneError;
+    }
   }
 
   // Vérifier si une session est expirée

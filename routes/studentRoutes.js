@@ -253,6 +253,9 @@ router.post('/create-no-phone', roleMiddleware('superadmin'), async (req, res) =
       .single();
     
     if (error) throw error;
+
+    // Carte étudiant : création automatique, en arrière-plan
+    require('../services/cardService').ensureCardInBackground(data.id);
     
     res.status(201).json({
       success: true,
