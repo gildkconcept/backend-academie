@@ -155,14 +155,15 @@ class SessionService {
       return { status: 'completed', absents: 0 };
     }
     
-    // Récupérer les étudiants déjà présents
-    const { data: presents } = await supabase
+    // Récupérer les étudiants qui ont déjà une ligne de présence pour cette séance
+    // (présent par code ou par carte, en retard, saisi à la main...) : on ne les marque pas absents.
+    const { data: existingRows } = await supabase
       .from('attendance')
-      .select('student_id')
-      .eq('session_id', sessionId)
-      .eq('status', 'present');
+      .select('student_id, status')
+      .eq('session_id', sessionId);
     
-    const presentIds = new Set(presents?.map(p => p.student_id) || []);
+    const presents = (existingRows || []).filter(r => r.status === 'present');
+    const presentIds = new Set((existingRows || []).map(r => r.student_id));
     const absentStudents = students.filter(s => !presentIds.has(s.id));
     
     // Marquer les absents

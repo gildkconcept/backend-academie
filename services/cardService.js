@@ -12,6 +12,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 // La photo apparaît sur la page publique de vérification (pour comparer le visage).
 // Pour la masquer : CARD_VERIFY_SHOW_PHOTO=false dans le .env du backend.
+const newToken = () => crypto.randomBytes(24).toString('base64url'); // 32 caractères, 192 bits
+
 const showPhotoOnVerify = () =>
   String(process.env.CARD_VERIFY_SHOW_PHOTO || 'true').toLowerCase() !== 'false';
 
@@ -58,7 +60,7 @@ async function getOrCreateCard(studentId) {
   const existing = await findCardByStudent(studentId);
   if (existing) return existing;
 
-  const token = crypto.randomBytes(24).toString('base64url'); // 32 caractères, 192 bits
+  const token = newToken();
   const { data, error } = await supabase
     .from('student_cards')
     .insert({ student_id: studentId, verify_token: token })
@@ -175,4 +177,82 @@ async function setCardStatus(studentId, status, { reason, adminId } = {}) {
   return { cardNumber: formatCardNumber(card.serial_no), status };
 }
 
-module.exports = { CardError, getMyCard, verifyCard, setCardStatus, formatCardNumber };
+// ---------------------------------------------------------------------------
+// Création automatique des cartes
+// ---------------------------------------------------------------------------
+
+// Crée la carte d'un étudiant en arrière-plan. N'échoue JAMAIS vers l'appelant :
+// si quelque chose se passe mal, la carte sera simplement créée à la première ouverture.
+function ensureCardInBackground(studentId) {
+  Promise.resolve()
+    .then(() => getOrCreateCard(studentId))
+    .catch((err) => console.error('⚠️ Carte étudiant non créée (elle le sera à la première ouverture):', err.message));
+}
+
+// Supabase limite chaque requête à 1000 lignes : on lit par pages
+async function fetchAllRows(buildQuery) {
+  const pageSize = 1000;
+  const rows = [];
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await buildQuery().range(from, from + pageSize - 1);
+    if (error) throw dbError(error);
+    rows.push(...(data || []));
+    if (!data || data.length < pageSize) break;
+  }
+  return rows;
+}
+
+async function findStudentsWithoutCard() {
+  const students = await fetchAllRows(() =>
+    supabase.from('students').select('id').is('deleted_at', null).order('id')
+  );
+  const cards = await fetchAllRows(() =>
+    supabase.from('student_cards').select('student_id').order('student_id')
+  );
+  const withCard = new Set(cards.map((c) => c.student_id));
+  return { totalActive: students.length, missing: students.map((s) => s.id).filter((id) => !withCard.has(id)) };
+}
+
+async function countMissingCards() {
+  const { totalActive, missing } = await findStudentsWithoutCard();
+  return { totalActive, missing: missing.length };
+}
+
+// Crée la carte de tous les étudiants actifs qui n'en ont pas (peut être relancée sans risque)
+async function backfillMissingCards() {
+  const { totalActive, missing } = await findStudentsWithoutCard();
+  let created = 0;
+
+  for (let i = 0; i < missing.length; i += 200) {
+    const rows = missing.slice(i, i + 200).map((id) => ({ student_id: id, verify_token: newToken() }));
+    const { error } = await supabase.from('student_cards').insert(rows);
+    if (!error) {
+      created += rows.length;
+      continue;
+    }
+    if (error.code !== '23505') throw dbError(error);
+    // Doublon (une carte vient d'être créée en parallèle) : on reprend carte par carte
+    for (const row of rows) {
+      const { error: oneError } = await supabase.from('student_cards').insert(row);
+      if (!oneError) created += 1;
+      else if (oneError.code !== '23505') throw dbError(oneError);
+    }
+  }
+
+  return { totalActive, alreadyHadCard: totalActive - missing.length, created };
+}
+
+module.exports = {
+  CardError,
+  TOKEN_RE,
+  UUID_RE,
+  getMyCard,
+  verifyCard,
+  setCardStatus,
+  formatCardNumber,
+  getOrCreateCard,
+  ensureCardInBackground,
+  fetchAllRows,
+  countMissingCards,
+  backfillMissingCards,
+};
